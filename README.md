@@ -100,7 +100,7 @@ According to "quarterly_report.pdf", ...
 ## Advanced features
 
 **A sample document loads automatically the first time.** So the app is
-never a blank slate — a bundled sample quarterly report
+never a blank slate - a bundled sample quarterly report
 (`sample_documents/Sample_Quarterly_Report.md`) loads once per fresh
 session if you haven't added anything of your own yet, with a few
 suggested questions shown as one-click buttons. It's a real document like
