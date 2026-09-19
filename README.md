@@ -44,7 +44,7 @@ it:**
 2. Copy `.env.example` to a new file named `.env` in the project root.
 3. Open `.env` and paste your key in place of `sk-or-your-key-here`.
 
-That's it — `.env` is loaded automatically, and it's already listed in
+That's it - `.env` is loaded automatically, and it's already listed in
 `.gitignore` so it won't accidentally get committed if you put this project
 under version control.
 
