@@ -798,26 +798,61 @@ if "username" not in st.session_state:
 # Restore Remember Me session
 # ---------------------------------------------------------------------------
 
+# CookieManager needs a browser round-trip before its cookie value is
+# available. Keep the login UI from flashing during that first pass.
+if "remember_check_complete" not in st.session_state:
+    st.session_state.remember_check_complete = False
+
+
 if st.session_state.user_id is None:
+
+    remember_token = None
 
     try:
         remember_token = cookie_manager.get(
             REMEMBER_COOKIE_NAME
         )
-
-        if remember_token:
-            session = accounts.authenticate_remember_token(
-                remember_token
-            )
-
-            if session:
-                (
-                    st.session_state.user_id,
-                    st.session_state.username,
-                ) = session
-
     except Exception:
-        pass
+        remember_token = None
+
+    if not st.session_state.remember_check_complete:
+
+        # On the first browser pass, wait for CookieManager to return
+        # the cookie instead of rendering the login screen prematurely.
+        if remember_token is None:
+            st.markdown(
+                """
+                <div style="
+                    min-height: 60vh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    color: #9AA5A2;
+                    font-family: 'IBM Plex Sans', sans-serif;
+                    font-size: 0.9rem;
+                ">
+                    Loading FileWhisperer…
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.stop()
+
+        st.session_state.remember_check_complete = True
+
+    if remember_token:
+
+        session = accounts.authenticate_remember_token(
+            remember_token
+        )
+
+        if session:
+            (
+                st.session_state.user_id,
+                st.session_state.username,
+            ) = session
+
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -905,6 +940,7 @@ if st.session_state.user_id is None:
                             )
 
                             st.session_state.user_id = user_id
+                            st.session_state.remember_check_complete = True
 
                             st.session_state.username = (
                                 li_username.strip()
@@ -1004,6 +1040,7 @@ if st.session_state.user_id is None:
                                 )
 
                                 st.session_state.user_id = user_id
+                                st.session_state.remember_check_complete = True
 
                                 st.session_state.username = (
                                     su_username.strip()
@@ -1592,6 +1629,7 @@ with st.sidebar:
 
                 st.session_state.user_id = None
                 st.session_state.username = None
+                st.session_state.remember_check_complete = True
                 st.session_state.chat_history = []
                 st.session_state.current_chat_id = None
                 st.session_state.processed_files = set()
