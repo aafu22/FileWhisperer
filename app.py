@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 
 import streamlit as st
-import extra_streamlit_components as stx
 
 from filewhisperer import FileWhisperer
 from filewhisperer import accounts
@@ -30,6 +29,81 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="auto",
 )
+
+
+# ---------------------------------------------------------------------------
+# Browser cookie component (Streamlit Components V2)
+# ---------------------------------------------------------------------------
+
+COOKIE_COMPONENT_JS = r"""
+export default function(component) {
+    const { data, setTriggerValue } = component;
+
+    if (!data || !data.action) {
+        return;
+    }
+
+    try {
+        const name = String(data.name || "");
+        const value = String(data.value || "");
+        const maxAge = Number(data.max_age || 0);
+        const secure = data.secure ? "; Secure" : "";
+
+        if (!name) {
+            return;
+        }
+
+        if (data.action === "set") {
+            document.cookie =
+                `${name}=${encodeURIComponent(value)}; ` +
+                `Max-Age=${maxAge}; ` +
+                `Path=/; ` +
+                `SameSite=Lax` +
+                secure;
+        } else if (data.action === "delete") {
+            document.cookie =
+                `${name}=; ` +
+                `Max-Age=0; ` +
+                `Path=/; ` +
+                `SameSite=Lax` +
+                secure;
+        }
+
+        // Tell Streamlit that the browser-side operation finished.
+        // This causes a normal Streamlit rerun, after which the updated
+        // authentication state is rendered.
+        setTriggerValue("done", String(data.nonce || Date.now()));
+    } catch (error) {
+        console.error("FileWhisperer cookie operation failed:", error);
+        setTriggerValue("done", "error:" + String(data.nonce || Date.now()));
+    }
+}
+"""
+
+COOKIE_COMPONENT = st.components.v2.component(
+    "filewhisperer_cookie",
+    js=COOKIE_COMPONENT_JS,
+)
+
+
+def run_cookie_action(
+    action: str,
+    token: str = "",
+) -> None:
+    """Run a browser-side cookie operation and let the component trigger rerun."""
+
+    COOKIE_COMPONENT(
+        key="filewhisperer_cookie_action",
+        data={
+            "action": action,
+            "name": REMEMBER_COOKIE_NAME,
+            "value": token,
+            "max_age": REMEMBER_ME_SECONDS if action == "set" else 0,
+            "secure": COOKIE_SECURE,
+            "nonce": time.time_ns(),
+        },
+        on_done_change=lambda: None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -743,37 +817,16 @@ COOKIE_SECURE = os.environ.get(
 }
 
 
-def get_cookie_manager():
-    """Return the browser cookie manager."""
-    return stx.CookieManager(
-        key="filewhisperer_cookie_manager"
-    )
-
-
-cookie_manager = get_cookie_manager()
-
-
 def set_remember_cookie(token: str) -> None:
-    """Persist the remember-me token in the browser."""
+    """Ask the browser to persist the remember-me token."""
 
-    cookie_manager.set(
-        cookie=REMEMBER_COOKIE_NAME,
-        val=token,
-        key="remember_cookie_set",
-        path="/",
-        max_age=REMEMBER_ME_SECONDS,
-        secure=COOKIE_SECURE,
-        same_site="lax",
-    )
+    run_cookie_action("set", token)
 
 
 def delete_remember_cookie() -> None:
-    """Remove the remember-me cookie."""
+    """Ask the browser to remove the remember-me cookie."""
 
-    cookie_manager.delete(
-        cookie=REMEMBER_COOKIE_NAME,
-        key="remember_cookie_delete",
-    )
+    run_cookie_action("delete")
 
 
 # ---------------------------------------------------------------------------
@@ -785,6 +838,9 @@ if "user_id" not in st.session_state:
 
 if "username" not in st.session_state:
     st.session_state.username = None
+
+if "remember_token" not in st.session_state:
+    st.session_state.remember_token = None
 
 
 # ---------------------------------------------------------------------------
@@ -817,6 +873,7 @@ if st.session_state.user_id is None:
                     st.session_state.user_id,
                     st.session_state.username,
                 ) = session
+                st.session_state.remember_token = remember_token
 
         except Exception:
             pass
@@ -920,11 +977,19 @@ if st.session_state.user_id is None:
                                     )
                                 )
 
+                                st.session_state.remember_token = token
+
                                 set_remember_cookie(
                                     token
                                 )
 
-                            st.rerun()
+                            else:
+                                st.session_state.remember_token = None
+
+                                delete_remember_cookie()
+
+                            # The V2 cookie component triggers the rerun
+                            # after the browser has completed the operation.
 
                         except accounts.InvalidCredentials as e:
 
@@ -1017,11 +1082,14 @@ if st.session_state.user_id is None:
                                     )
                                 )
 
+                                st.session_state.remember_token = token
+
                                 set_remember_cookie(
                                     token
                                 )
 
-                                st.rerun()
+                                # The V2 cookie component triggers the rerun
+                                # after the browser has completed the operation.
 
                             except (
                                 accounts.UsernameTaken,
@@ -1581,18 +1649,16 @@ with st.sidebar:
                 key="profile_logout",
             ):
 
-                remember_token = None
+                remember_token = st.session_state.remember_token
 
-                if hasattr(
-                    st,
-                    "context",
-                ):
-
-                    remember_token = (
-                        st.context.cookies.get(
-                            REMEMBER_COOKIE_NAME
-                        )
-                    )
+                if not remember_token:
+                    try:
+                        if hasattr(st, "context"):
+                            remember_token = st.context.cookies.get(
+                                REMEMBER_COOKIE_NAME
+                            )
+                    except Exception:
+                        remember_token = None
 
                 if remember_token:
 
@@ -1604,11 +1670,14 @@ with st.sidebar:
 
                 st.session_state.user_id = None
                 st.session_state.username = None
+                st.session_state.remember_token = None
                 st.session_state.chat_history = []
                 st.session_state.current_chat_id = None
                 st.session_state.processed_files = set()
 
-                st.rerun()
+                # The V2 cookie component triggers the rerun after the
+                # browser has deleted the cookie.
+                st.stop()
 
     # Documents
     with st.container(
