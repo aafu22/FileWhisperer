@@ -620,13 +620,11 @@ div[class*="st-key-panel_profile"] .stButton button {
 
 @media (max-width: 768px) {
 
-    /* Main content */
     [data-testid="stMainBlockContainer"] {
         padding-left: 1rem !important;
         padding-right: 1rem !important;
     }
 
-    /* Mobile sidebar */
     [data-testid="stSidebar"] {
         width: min(88vw, 360px) !important;
     }
@@ -636,14 +634,12 @@ div[class*="st-key-panel_profile"] .stButton button {
         padding-right: 0.75rem;
     }
 
-    /* Sidebar cards */
     div[class*="st-key-panel_"] {
         padding: 0.7rem 0.75rem 0.55rem 0.75rem;
         margin-bottom: 0.7rem;
         border-radius: 10px;
     }
 
-    /* Header */
     .dm-header {
         gap: 0.35rem;
         margin-top: 0.4rem;
@@ -664,25 +660,21 @@ div[class*="st-key-panel_profile"] .stButton button {
         margin-bottom: 1rem;
     }
 
-    /* Quick start */
     .fw-question-label {
         font-size: 0.9rem;
         margin-top: 1.5rem;
         margin-bottom: 0.75rem;
     }
 
-    /* Touch-friendly buttons */
     .stButton button {
         min-height: 44px !important;
         font-size: 0.92rem;
     }
 
-    /* Quick-start buttons */
     div[class*="st-key-suggest_"] button {
         min-height: 46px !important;
     }
 
-    /* Chat */
     .dm-bubble {
         max-width: 94%;
         padding: 0.55rem 0.75rem;
@@ -693,7 +685,6 @@ div[class*="st-key-panel_profile"] .stButton button {
         max-width: 94%;
     }
 
-    /* Chat input */
     [data-testid="stChatInput"] {
         padding-left: 0.5rem !important;
         padding-right: 0.5rem !important;
@@ -708,12 +699,10 @@ div[class*="st-key-panel_profile"] .stButton button {
         min-height: 44px !important;
     }
 
-    /* File uploader */
     [data-testid="stFileUploaderDropzone"] {
         padding: 0.65rem !important;
     }
 
-    /* Sidebar sample button */
     div[class*="st-key-sample_report_button"] button {
         min-height: 46px !important;
     }
@@ -755,8 +744,10 @@ COOKIE_SECURE = os.environ.get(
 
 
 def get_cookie_manager():
-    """Return one persistent CookieManager instance for the app."""
-    return stx.CookieManager(key="filewhisperer_cookie_manager")
+    """Return the browser cookie manager."""
+    return stx.CookieManager(
+        key="filewhisperer_cookie_manager"
+    )
 
 
 cookie_manager = get_cookie_manager()
@@ -764,6 +755,7 @@ cookie_manager = get_cookie_manager()
 
 def set_remember_cookie(token: str) -> None:
     """Persist the remember-me token in the browser."""
+
     cookie_manager.set(
         cookie=REMEMBER_COOKIE_NAME,
         val=token,
@@ -777,6 +769,7 @@ def set_remember_cookie(token: str) -> None:
 
 def delete_remember_cookie() -> None:
     """Remove the remember-me cookie."""
+
     cookie_manager.delete(
         cookie=REMEMBER_COOKIE_NAME,
         key="remember_cookie_delete",
@@ -798,61 +791,35 @@ if "username" not in st.session_state:
 # Restore Remember Me session
 # ---------------------------------------------------------------------------
 
-# CookieManager needs a browser round-trip before its cookie value is
-# available. Keep the login UI from flashing during that first pass.
-if "remember_check_complete" not in st.session_state:
-    st.session_state.remember_check_complete = False
-
-
+# Streamlit exposes incoming browser cookies synchronously through
+# st.context.cookies. This avoids an async component round-trip and prevents
+# the login/loading screen from getting stuck on Streamlit Cloud.
 if st.session_state.user_id is None:
 
     remember_token = None
 
     try:
-        remember_token = cookie_manager.get(
-            REMEMBER_COOKIE_NAME
-        )
+        if hasattr(st, "context"):
+            remember_token = st.context.cookies.get(
+                REMEMBER_COOKIE_NAME
+            )
     except Exception:
         remember_token = None
 
-    if not st.session_state.remember_check_complete:
-
-        # On the first browser pass, wait for CookieManager to return
-        # the cookie instead of rendering the login screen prematurely.
-        if remember_token is None:
-            st.markdown(
-                """
-                <div style="
-                    min-height: 60vh;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    color: #9AA5A2;
-                    font-family: 'IBM Plex Sans', sans-serif;
-                    font-size: 0.9rem;
-                ">
-                    Loading FileWhisperer…
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.stop()
-
-        st.session_state.remember_check_complete = True
-
     if remember_token:
+        try:
+            session = accounts.authenticate_remember_token(
+                remember_token
+            )
 
-        session = accounts.authenticate_remember_token(
-            remember_token
-        )
+            if session:
+                (
+                    st.session_state.user_id,
+                    st.session_state.username,
+                ) = session
 
-        if session:
-            (
-                st.session_state.user_id,
-                st.session_state.username,
-            ) = session
-
-            st.rerun()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -940,7 +907,6 @@ if st.session_state.user_id is None:
                             )
 
                             st.session_state.user_id = user_id
-                            st.session_state.remember_check_complete = True
 
                             st.session_state.username = (
                                 li_username.strip()
@@ -1040,7 +1006,6 @@ if st.session_state.user_id is None:
                                 )
 
                                 st.session_state.user_id = user_id
-                                st.session_state.remember_check_complete = True
 
                                 st.session_state.username = (
                                     su_username.strip()
@@ -1616,11 +1581,21 @@ with st.sidebar:
                 key="profile_logout",
             ):
 
-                remember_token = cookie_manager.get(
-                    REMEMBER_COOKIE_NAME
-                )
+                remember_token = None
+
+                if hasattr(
+                    st,
+                    "context",
+                ):
+
+                    remember_token = (
+                        st.context.cookies.get(
+                            REMEMBER_COOKIE_NAME
+                        )
+                    )
 
                 if remember_token:
+
                     accounts.revoke_remember_token(
                         remember_token
                     )
@@ -1629,7 +1604,6 @@ with st.sidebar:
 
                 st.session_state.user_id = None
                 st.session_state.username = None
-                st.session_state.remember_check_complete = True
                 st.session_state.chat_history = []
                 st.session_state.current_chat_id = None
                 st.session_state.processed_files = set()
