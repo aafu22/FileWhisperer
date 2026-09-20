@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import streamlit as st
+import extra_streamlit_components as stx
 
 from filewhisperer import FileWhisperer
 from filewhisperer import accounts
@@ -27,7 +28,7 @@ st.set_page_config(
     page_title="FileWhisperer",
     page_icon="",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 
@@ -613,6 +614,111 @@ div[class*="st-key-panel_profile"] .stButton button {
 
 }
 
+/* -----------------------------------------------------------------------
+   Mobile
+   ----------------------------------------------------------------------- */
+
+@media (max-width: 768px) {
+
+    /* Main content */
+    [data-testid="stMainBlockContainer"] {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+
+    /* Mobile sidebar */
+    [data-testid="stSidebar"] {
+        width: min(88vw, 360px) !important;
+    }
+
+    [data-testid="stSidebar"] > div:first-child {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+    }
+
+    /* Sidebar cards */
+    div[class*="st-key-panel_"] {
+        padding: 0.7rem 0.75rem 0.55rem 0.75rem;
+        margin-bottom: 0.7rem;
+        border-radius: 10px;
+    }
+
+    /* Header */
+    .dm-header {
+        gap: 0.35rem;
+        margin-top: 0.4rem;
+    }
+
+    .dm-header .mark,
+    .dm-header .word {
+        font-size: 1.85rem;
+    }
+
+    .dm-tagline {
+        font-size: 0.88rem;
+        line-height: 1.45;
+        max-width: 100%;
+    }
+
+    .dm-rule {
+        margin-bottom: 1rem;
+    }
+
+    /* Quick start */
+    .fw-question-label {
+        font-size: 0.9rem;
+        margin-top: 1.5rem;
+        margin-bottom: 0.75rem;
+    }
+
+    /* Touch-friendly buttons */
+    .stButton button {
+        min-height: 44px !important;
+        font-size: 0.92rem;
+    }
+
+    /* Quick-start buttons */
+    div[class*="st-key-suggest_"] button {
+        min-height: 46px !important;
+    }
+
+    /* Chat */
+    .dm-bubble {
+        max-width: 94%;
+        padding: 0.55rem 0.75rem;
+        font-size: 0.92rem;
+    }
+
+    .dm-sources {
+        max-width: 94%;
+    }
+
+    /* Chat input */
+    [data-testid="stChatInput"] {
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+    }
+
+    [data-testid="stChatInput"] textarea {
+        font-size: 0.92rem !important;
+    }
+
+    [data-testid="stChatInput"] button {
+        min-width: 44px !important;
+        min-height: 44px !important;
+    }
+
+    /* File uploader */
+    [data-testid="stFileUploaderDropzone"] {
+        padding: 0.65rem !important;
+    }
+
+    /* Sidebar sample button */
+    div[class*="st-key-sample_report_button"] button {
+        min-height: 46px !important;
+    }
+}
+
 </style>
 """
 
@@ -648,67 +754,32 @@ COOKIE_SECURE = os.environ.get(
 }
 
 
+def get_cookie_manager():
+    """Return one persistent CookieManager instance for the app."""
+    return stx.CookieManager(key="filewhisperer_cookie_manager")
+
+
+cookie_manager = get_cookie_manager()
+
+
 def set_remember_cookie(token: str) -> None:
     """Persist the remember-me token in the browser."""
-
-    import streamlit.components.v1 as components
-
-    secure_flag = "; Secure" if COOKIE_SECURE else ""
-
-    cookie = (
-        f"{REMEMBER_COOKIE_NAME}={token}; "
-        f"Max-Age={REMEMBER_ME_SECONDS}; "
-        f"Path=/; "
-        f"SameSite=Lax"
-        f"{secure_flag}"
-    )
-
-    components.html(
-        f"""
-        <script>
-        (function() {{
-            try {{
-                window.parent.document.cookie = {cookie!r};
-            }} catch (e) {{
-                console.error(
-                    "Could not set remember-me cookie:",
-                    e
-                );
-            }}
-        }})();
-        </script>
-        """,
-        height=0,
-        width=0,
+    cookie_manager.set(
+        cookie=REMEMBER_COOKIE_NAME,
+        val=token,
+        key="remember_cookie_set",
+        path="/",
+        max_age=REMEMBER_ME_SECONDS,
+        secure=COOKIE_SECURE,
+        same_site="lax",
     )
 
 
 def delete_remember_cookie() -> None:
     """Remove the remember-me cookie."""
-
-    import streamlit.components.v1 as components
-
-    components.html(
-        f"""
-        <script>
-        (function() {{
-            try {{
-                window.parent.document.cookie =
-                    "{REMEMBER_COOKIE_NAME}=; "
-                    "Max-Age=0; "
-                    "Path=/; "
-                    "SameSite=Lax";
-            }} catch (e) {{
-                console.error(
-                    "Could not delete remember-me cookie:",
-                    e
-                );
-            }}
-        }})();
-        </script>
-        """,
-        height=0,
-        width=0,
+    cookie_manager.delete(
+        cookie=REMEMBER_COOKIE_NAME,
+        key="remember_cookie_delete",
     )
 
 
@@ -730,30 +801,22 @@ if "username" not in st.session_state:
 if st.session_state.user_id is None:
 
     try:
-
-        remember_token = None
-
-        if hasattr(st, "context"):
-
-            remember_token = st.context.cookies.get(
-                REMEMBER_COOKIE_NAME
-            )
+        remember_token = cookie_manager.get(
+            REMEMBER_COOKIE_NAME
+        )
 
         if remember_token:
-
             session = accounts.authenticate_remember_token(
                 remember_token
             )
 
             if session:
-
                 (
                     st.session_state.user_id,
                     st.session_state.username,
                 ) = session
 
     except Exception:
-
         pass
 
 
@@ -1516,21 +1579,11 @@ with st.sidebar:
                 key="profile_logout",
             ):
 
-                remember_token = None
-
-                if hasattr(
-                    st,
-                    "context",
-                ):
-
-                    remember_token = (
-                        st.context.cookies.get(
-                            REMEMBER_COOKIE_NAME
-                        )
-                    )
+                remember_token = cookie_manager.get(
+                    REMEMBER_COOKIE_NAME
+                )
 
                 if remember_token:
-
                     accounts.revoke_remember_token(
                         remember_token
                     )
