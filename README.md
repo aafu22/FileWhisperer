@@ -1,9 +1,10 @@
 # FileWhisperer
 
-A small Python, AI-powered document Q&A assistant. Add your own documents,
-ask questions, and get answers grounded in what's actually in them — powered
-by a **free** model on [OpenRouter](https://openrouter.ai), no paid API key
-required.
+**An AI-powered document assistant that lets you upload files, ask natural-language questions, and get answers grounded in your documents.**
+
+FileWhisperer combines lightweight TF-IDF retrieval with an LLM-based generation pipeline to create a practical Retrieval-Augmented Generation (RAG) application.
+
+**[Live Demo](YOUR_STREAMLIT_URL) · [GitHub](YOUR_GITHUB_URL)**
 
 📄 See [CASE_STUDY.md](CASE_STUDY.md) for a write-up of the architecture,
 engineering decisions, and specific bugs this project's design solves.
@@ -208,7 +209,7 @@ Two things worth knowing about this specific hosting setup, so nothing here surp
   quiet period waits ~30-60 seconds while it wakes up. Worth mentioning if
   you're sending someone a link cold (a recruiter, say) so a slow first
   load doesn't look broken.
-- **The SQLite accounts database is not guaranteed to survive a redeploy.**
+- **> **Deployment note:** The Streamlit Community Cloud demo uses SQLite for simplicity. Because Community Cloud does not provide a persistent database volume by default, accounts and chat history in the public demo should be considered demo data rather than production data.**
   Community Cloud rebuilds the app's container from your repo each time
   you push new code, and there's no persistent volume by default — so
   accounts/chats created on the live demo can be wiped whenever you
@@ -326,9 +327,13 @@ your machine.
 
 ### Remember Me
 
-FileWhisperer stores a cryptographically random 30-day remember-me token in the browser and stores only its SHA-256 hash in `data/documind.db`. The database is kept outside the Python package files so replacing/updating the code does not require recreating accounts.
+FileWhisperer supports a 30-day "Remember Me" login option.
 
-For local development over `http://localhost`, leave `FILEWHISPERER_COOKIE_SECURE=false`. For an HTTPS deployment, set `FILEWHISPERER_COOKIE_SECURE=true`.
+When enabled, the application creates a cryptographically random session token and stores only its SHA-256 hash in the SQLite database. The token is used to restore the user's authenticated session across browser refreshes and reopening the application.
+
+For the current Streamlit Community Cloud deployment, the token is persisted through Streamlit URL query parameters rather than browser cookies. This was chosen for compatibility with Streamlit's hosted execution environment.
+
+> Note: Because the token is carried in the URL, this implementation is intended as a simple portfolio/demo authentication mechanism rather than production-grade authentication. A production deployment should use secure, HttpOnly cookies or a dedicated authentication provider.
 
 ### Database compatibility note
 
