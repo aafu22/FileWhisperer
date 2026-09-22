@@ -847,68 +847,36 @@ if "remember_token" not in st.session_state:
 # Restore Remember Me session
 # ---------------------------------------------------------------------------
 
-# TEMPORARY DEBUG: this intentionally shows only non-sensitive diagnostics.
-# Enable/disable with FILEWHISPERER_DEBUG_REMEMBER_ME=true/false.
-DEBUG_REMEMBER_ME = os.environ.get(
-    "FILEWHISPERER_DEBUG_REMEMBER_ME",
-    "true",
-).strip().lower() in {"1", "true", "yes", "on"}
-
-remember_debug = {
-    "cookie_api_available": False,
-    "cookie_present": False,
-    "cookie_length": 0,
-    "cookie_fingerprint": "",
-    "validation_result": "not_checked",
-    "validation_error": "",
-    "db_path": str(accounts.DB_PATH),
-    "db_exists": accounts.DB_PATH.exists(),
-}
-
+# Streamlit exposes incoming browser cookies synchronously through
+# st.context.cookies. This avoids an async component round-trip and prevents
+# the login/loading screen from getting stuck on Streamlit Cloud.
 if st.session_state.user_id is None:
 
     remember_token = None
 
     try:
-        remember_debug["cookie_api_available"] = hasattr(st, "context")
-        if remember_debug["cookie_api_available"]:
+        if hasattr(st, "context"):
             remember_token = st.context.cookies.get(
                 REMEMBER_COOKIE_NAME
             )
-    except Exception as e:
-        remember_debug["validation_error"] = f"Cookie read error: {type(e).__name__}: {e}"
+    except Exception:
+        remember_token = None
 
-    remember_debug["cookie_present"] = bool(remember_token)
-    remember_debug["cookie_length"] = len(remember_token or "")
     if remember_token:
-        remember_debug["cookie_fingerprint"] = __import__("hashlib").sha256(
-            remember_token.encode("utf-8")
-        ).hexdigest()[:12]
-
         try:
             session = accounts.authenticate_remember_token(
                 remember_token
             )
 
             if session:
-                remember_debug["validation_result"] = "VALID"
                 (
                     st.session_state.user_id,
                     st.session_state.username,
                 ) = session
                 st.session_state.remember_token = remember_token
-            else:
-                remember_debug["validation_result"] = "INVALID_OR_NOT_FOUND"
 
-        except Exception as e:
-            remember_debug["validation_result"] = "EXCEPTION"
-            remember_debug["validation_error"] = (
-                f"{type(e).__name__}: {e}"
-            )
-
-if DEBUG_REMEMBER_ME and st.session_state.user_id is None:
-    with st.expander("Remember Me diagnostics", expanded=True):
-        st.json(remember_debug)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
