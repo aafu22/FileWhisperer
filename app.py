@@ -32,81 +32,6 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------------------------
-# Browser cookie component (Streamlit Components V2)
-# ---------------------------------------------------------------------------
-
-COOKIE_COMPONENT_JS = r"""
-export default function(component) {
-    const { data, setTriggerValue } = component;
-
-    if (!data || !data.action) {
-        return;
-    }
-
-    try {
-        const name = String(data.name || "");
-        const value = String(data.value || "");
-        const maxAge = Number(data.max_age || 0);
-        const secure = data.secure ? "; Secure" : "";
-
-        if (!name) {
-            return;
-        }
-
-        if (data.action === "set") {
-            document.cookie =
-                `${name}=${encodeURIComponent(value)}; ` +
-                `Max-Age=${maxAge}; ` +
-                `Path=/; ` +
-                `SameSite=Lax` +
-                secure;
-        } else if (data.action === "delete") {
-            document.cookie =
-                `${name}=; ` +
-                `Max-Age=0; ` +
-                `Path=/; ` +
-                `SameSite=Lax` +
-                secure;
-        }
-
-        // Tell Streamlit that the browser-side operation finished.
-        // This causes a normal Streamlit rerun, after which the updated
-        // authentication state is rendered.
-        setTriggerValue("done", String(data.nonce || Date.now()));
-    } catch (error) {
-        console.error("FileWhisperer cookie operation failed:", error);
-        setTriggerValue("done", "error:" + String(data.nonce || Date.now()));
-    }
-}
-"""
-
-COOKIE_COMPONENT = st.components.v2.component(
-    "filewhisperer_cookie",
-    js=COOKIE_COMPONENT_JS,
-)
-
-
-def run_cookie_action(
-    action: str,
-    token: str = "",
-) -> None:
-    """Run a browser-side cookie operation and let the component trigger rerun."""
-
-    COOKIE_COMPONENT(
-        key="filewhisperer_cookie_action",
-        data={
-            "action": action,
-            "name": REMEMBER_COOKIE_NAME,
-            "value": token,
-            "max_age": REMEMBER_ME_SECONDS if action == "set" else 0,
-            "secure": COOKIE_SECURE,
-            "nonce": time.time_ns(),
-        },
-        on_done_change=lambda: None,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Visual identity
 # ---------------------------------------------------------------------------
 
@@ -803,32 +728,38 @@ SIGNUP_CODE = os.environ.get(
     os.environ.get("DOCUMIND_SIGNUP_CODE", ""),
 ).strip()
 
-REMEMBER_COOKIE_NAME = "filewhisperer_remember"
+# Simple 30-day Remember Me:
+# the token is kept in Streamlit's URL query parameters instead of relying
+# on browser cookies, which avoids the cookie round-trip issue on Streamlit
+# Community Cloud.
+REMEMBER_QUERY_PARAM = "remember"
 REMEMBER_ME_SECONDS = 30 * 24 * 60 * 60
 
-COOKIE_SECURE = os.environ.get(
-    "FILEWHISPERER_COOKIE_SECURE",
-    os.environ.get("DOCUMIND_COOKIE_SECURE", "false"),
-).strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+
+def get_remember_token_from_url() -> str | None:
+    """Read the persistent login token from the current URL."""
+    try:
+        token = st.query_params.get(REMEMBER_QUERY_PARAM)
+        return token.strip() if token else None
+    except Exception:
+        return None
 
 
-def set_remember_cookie(token: str) -> None:
-    """Ask the browser to persist the remember-me token."""
-
-    run_cookie_action("set", token)
-
-
-def delete_remember_cookie() -> None:
-    """Ask the browser to remove the remember-me cookie."""
-
-    run_cookie_action("delete")
+def set_remember_token_in_url(token: str) -> None:
+    """Persist the remember-me token in the browser URL."""
+    if token:
+        st.query_params[REMEMBER_QUERY_PARAM] = token
 
 
+def delete_remember_token_from_url() -> None:
+    """Remove the remember-me token from the browser URL."""
+    try:
+        del st.query_params[REMEMBER_QUERY_PARAM]
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Authentication state
 # ---------------------------------------------------------------------------
@@ -847,68 +778,25 @@ if "remember_token" not in st.session_state:
 # Restore Remember Me session
 # ---------------------------------------------------------------------------
 
-# TEMPORARY DEBUG: this intentionally shows only non-sensitive diagnostics.
-# Enable/disable with FILEWHISPERER_DEBUG_REMEMBER_ME=true/false.
-DEBUG_REMEMBER_ME = os.environ.get(
-    "FILEWHISPERER_DEBUG_REMEMBER_ME",
-    "true",
-).strip().lower() in {"1", "true", "yes", "on"}
-
-remember_debug = {
-    "cookie_api_available": False,
-    "cookie_present": False,
-    "cookie_length": 0,
-    "cookie_fingerprint": "",
-    "validation_result": "not_checked",
-    "validation_error": "",
-    "db_path": str(accounts.DB_PATH),
-    "db_exists": accounts.DB_PATH.exists(),
-}
-
 if st.session_state.user_id is None:
 
-    remember_token = None
+    remember_token = get_remember_token_from_url()
 
-    try:
-        remember_debug["cookie_api_available"] = hasattr(st, "context")
-        if remember_debug["cookie_api_available"]:
-            remember_token = st.context.cookies.get(
-                REMEMBER_COOKIE_NAME
-            )
-    except Exception as e:
-        remember_debug["validation_error"] = f"Cookie read error: {type(e).__name__}: {e}"
-
-    remember_debug["cookie_present"] = bool(remember_token)
-    remember_debug["cookie_length"] = len(remember_token or "")
     if remember_token:
-        remember_debug["cookie_fingerprint"] = __import__("hashlib").sha256(
-            remember_token.encode("utf-8")
-        ).hexdigest()[:12]
-
         try:
             session = accounts.authenticate_remember_token(
                 remember_token
             )
 
             if session:
-                remember_debug["validation_result"] = "VALID"
                 (
                     st.session_state.user_id,
                     st.session_state.username,
                 ) = session
                 st.session_state.remember_token = remember_token
-            else:
-                remember_debug["validation_result"] = "INVALID_OR_NOT_FOUND"
 
-        except Exception as e:
-            remember_debug["validation_result"] = "EXCEPTION"
-            remember_debug["validation_error"] = (
-                f"{type(e).__name__}: {e}"
-            )
-
-if DEBUG_REMEMBER_ME and st.session_state.user_id is None:
-    with st.expander("Remember Me diagnostics", expanded=True):
-        st.json(remember_debug)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1011,17 +899,15 @@ if st.session_state.user_id is None:
 
                                 st.session_state.remember_token = token
 
-                                set_remember_cookie(
+                                set_remember_token_in_url(
                                     token
                                 )
 
                             else:
                                 st.session_state.remember_token = None
 
-                                delete_remember_cookie()
+                                delete_remember_token_from_url()
 
-                            # The V2 cookie component triggers the rerun
-                            # after the browser has completed the operation.
 
                         except accounts.InvalidCredentials as e:
 
@@ -1116,7 +1002,7 @@ if st.session_state.user_id is None:
 
                                 st.session_state.remember_token = token
 
-                                set_remember_cookie(
+                                set_remember_token_in_url(
                                     token
                                 )
 
@@ -1684,13 +1570,7 @@ with st.sidebar:
                 remember_token = st.session_state.remember_token
 
                 if not remember_token:
-                    try:
-                        if hasattr(st, "context"):
-                            remember_token = st.context.cookies.get(
-                                REMEMBER_COOKIE_NAME
-                            )
-                    except Exception:
-                        remember_token = None
+                    remember_token = get_remember_token_from_url()
 
                 if remember_token:
 
@@ -1698,7 +1578,7 @@ with st.sidebar:
                         remember_token
                     )
 
-                delete_remember_cookie()
+                delete_remember_token_from_url()
 
                 st.session_state.user_id = None
                 st.session_state.username = None
