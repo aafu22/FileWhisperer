@@ -14,6 +14,13 @@ from pathlib import Path
 
 import streamlit as st
 
+# Temporary performance diagnostics — output goes to terminal/Streamlit logs.
+_PERF_RUN_START = time.perf_counter()
+
+def _perf(label: str, started: float) -> None:
+    print(f"[PERF] {label}: {time.perf_counter() - started:.3f}s", flush=True)
+
+
 from filewhisperer import FileWhisperer
 from filewhisperer import accounts
 from filewhisperer.loaders import EmptyDocument, UnsupportedFileType
@@ -750,8 +757,12 @@ st.markdown(
 # Accounts / Remember Me
 # ---------------------------------------------------------------------------
 
+_t = time.perf_counter()
 accounts.init_db()
+_perf("accounts.init_db", _t)
+_t = time.perf_counter()
 accounts.cleanup_expired_tokens()
+_perf("accounts.cleanup_expired_tokens", _t)
 
 SIGNUP_CODE = os.environ.get(
     "FILEWHISPERER_SIGNUP_CODE",
@@ -1144,7 +1155,11 @@ def render_bubble(
 # ---------------------------------------------------------------------------
 
 if "dm" not in st.session_state:
+    _t = time.perf_counter()
+    _t = time.perf_counter()
     st.session_state.dm = FileWhisperer()
+    _perf("FileWhisperer reset", _t)
+    _perf("FileWhisperer initial init", _t)
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -1203,10 +1218,12 @@ def load_chat_documents(chat_id: str) -> None:
     """Rebuild the in-memory RAG index from documents saved for this chat."""
     reset_document_manager()
 
+    _t = time.perf_counter()
     documents = accounts.list_chat_documents(
         chat_id,
         st.session_state.user_id,
     )
+    _perf("list_chat_documents", _t)
 
     for stored in documents:
         suffix = Path(stored.filename).suffix
@@ -1397,10 +1414,12 @@ def render_document_viewer(chat_id: str | None) -> None:
     if not chat_id or not filename:
         return
 
+    _t = time.perf_counter()
     documents = accounts.list_chat_documents(
         chat_id,
         st.session_state.user_id,
     )
+    _perf("list_chat_documents", _t)
     document = next(
         (item for item in documents if item.filename == filename),
         None,
@@ -1464,10 +1483,12 @@ def render_chat_documents(
             st.caption("No documents attached to this chat yet.")
         return
 
+    _t = time.perf_counter()
     documents = accounts.list_chat_documents(
         chat_id,
         st.session_state.user_id,
     )
+    _perf("list_chat_documents", _t)
 
     if sidebar:
         st.markdown("### Documents")
@@ -1624,9 +1645,11 @@ with st.sidebar:
 
         st.markdown("### Chats")
 
+        _t = time.perf_counter()
         saved_chats = accounts.list_chats(
             st.session_state.user_id
         )
+        _perf("list_chats", _t)
 
         if saved_chats:
             for c in saved_chats:
@@ -1811,10 +1834,12 @@ def handle_question(
     current_dm = st.session_state.dm
 
     if st.session_state.current_chat_id:
+        _t = time.perf_counter()
         stored_documents = accounts.list_chat_documents(
             st.session_state.current_chat_id,
             st.session_state.user_id,
         )
+        _perf("question list_chat_documents", _t)
         stored_names = {d.filename for d in stored_documents}
         loaded_names = set(current_dm.documents.keys())
 
@@ -1848,11 +1873,13 @@ def handle_question(
             ]
 
             try:
+                _t = time.perf_counter()
                 answer, sources = dm.ask_with_sources(
                     q,
                     history=api_history,
                     document_names=document_names,
                 )
+                _perf("ask_with_sources", _t)
 
             except RuntimeError as e:
                 answer = str(e)
@@ -1930,11 +1957,13 @@ def handle_question(
         source_data,
     )
 
+    _t = time.perf_counter()
     st.session_state.current_chat_id = accounts.save_chat(
         st.session_state.user_id,
         st.session_state.chat_history,
         chat_id=st.session_state.current_chat_id,
     )
+    _perf("save_chat after answer", _t)
 
     st.rerun()
 
@@ -1985,6 +2014,8 @@ if not st.session_state.chat_history:
             unsafe_allow_html=True,
         )
 
+
+_perf("page render before chat_input", _PERF_RUN_START)
 
 # ---------------------------------------------------------------------------
 # Chat input with native multi-file attachments
