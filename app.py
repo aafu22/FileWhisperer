@@ -751,7 +751,12 @@ st.markdown(
 # ---------------------------------------------------------------------------
 
 accounts.init_db()
-accounts.cleanup_expired_tokens()
+
+# Avoid a remote Turso cleanup query on every Streamlit rerun.
+# Once per browser session is enough; expired tokens are also rejected by auth.
+if "token_cleanup_done" not in st.session_state:
+    accounts.cleanup_expired_tokens()
+    st.session_state.token_cleanup_done = True
 
 SIGNUP_CODE = os.environ.get(
     "FILEWHISPERER_SIGNUP_CODE",
@@ -1158,6 +1163,41 @@ if "renaming_chat_id" not in st.session_state:
 if "viewing_document_name" not in st.session_state:
     st.session_state.viewing_document_name = None
 
+# Session-local database read cache. Streamlit reruns the script on every UI
+# interaction, so unchanged chat/document lists should not hit remote Turso again.
+if "saved_chats_cache" not in st.session_state:
+    st.session_state.saved_chats_cache = None
+if "chat_documents_cache" not in st.session_state:
+    st.session_state.chat_documents_cache = {}
+
+
+def invalidate_chats_cache() -> None:
+    st.session_state.saved_chats_cache = None
+
+
+def invalidate_documents_cache(chat_id: str | None = None) -> None:
+    if chat_id is None:
+        st.session_state.chat_documents_cache = {}
+    else:
+        st.session_state.chat_documents_cache.pop(chat_id, None)
+
+
+def get_saved_chats():
+    if st.session_state.saved_chats_cache is None:
+        st.session_state.saved_chats_cache = accounts.list_chats(
+            st.session_state.user_id
+        )
+    return st.session_state.saved_chats_cache
+
+
+def get_chat_documents(chat_id: str, *, refresh: bool = False):
+    cache = st.session_state.chat_documents_cache
+    if refresh or chat_id not in cache:
+        cache[chat_id] = accounts.list_chat_documents(
+            chat_id, st.session_state.user_id
+        )
+    return cache[chat_id]
+
 
 dm: FileWhisperer = st.session_state.dm
 
@@ -1196,6 +1236,7 @@ def ensure_current_chat(name: str | None = None) -> str:
         name=name,
     )
     st.session_state.current_chat_id = chat_id
+    invalidate_chats_cache()
     return chat_id
 
 
@@ -1203,10 +1244,7 @@ def load_chat_documents(chat_id: str) -> None:
     """Rebuild the in-memory RAG index from documents saved for this chat."""
     reset_document_manager()
 
-    documents = accounts.list_chat_documents(
-        chat_id,
-        st.session_state.user_id,
-    )
+    documents = get_chat_documents(chat_id)
 
     for stored in documents:
         suffix = Path(stored.filename).suffix
@@ -1262,6 +1300,7 @@ def ingest_uploaded_file(
             file_type=uploaded_file.type or "",
             data=data,
         )
+        invalidate_documents_cache(chat_id)
 
         return True
 
@@ -1368,6 +1407,8 @@ def load_sample_report() -> None:
                 file_type="text/markdown",
                 data=data,
             )
+            invalidate_documents_cache(st.session_state.current_chat_id)
+            invalidate_chats_cache()
 
         st.rerun()
 
@@ -1397,10 +1438,7 @@ def render_document_viewer(chat_id: str | None) -> None:
     if not chat_id or not filename:
         return
 
-    documents = accounts.list_chat_documents(
-        chat_id,
-        st.session_state.user_id,
-    )
+    documents = get_chat_documents(chat_id)
     document = next(
         (item for item in documents if item.filename == filename),
         None,
@@ -1464,10 +1502,7 @@ def render_chat_documents(
             st.caption("No documents attached to this chat yet.")
         return
 
-    documents = accounts.list_chat_documents(
-        chat_id,
-        st.session_state.user_id,
-    )
+    documents = get_chat_documents(chat_id)
 
     if sidebar:
         st.markdown("### Documents")
@@ -1528,6 +1563,7 @@ def render_chat_documents(
                                 st.session_state.user_id,
                                 document.filename,
                             )
+                            invalidate_documents_cache(chat_id)
                             if st.session_state.viewing_document_name == document.filename:
                                 st.session_state.viewing_document_name = None
                             reset_document_manager()
@@ -1605,6 +1641,8 @@ with st.sidebar:
                 st.session_state.remember_token = None
                 st.session_state.chat_history = []
                 st.session_state.current_chat_id = None
+                invalidate_chats_cache()
+                invalidate_documents_cache()
                 reset_document_manager()
 
                 st.stop()
@@ -1624,9 +1662,7 @@ with st.sidebar:
 
         st.markdown("### Chats")
 
-        saved_chats = accounts.list_chats(
-            st.session_state.user_id
-        )
+        saved_chats = get_saved_chats()
 
         if saved_chats:
             for c in saved_chats:
@@ -1652,6 +1688,7 @@ with st.sidebar:
                                 st.session_state.user_id,
                                 new_name,
                             )
+                            invalidate_chats_cache()
                             st.session_state.renaming_chat_id = None
                             st.rerun()
 
@@ -1725,6 +1762,8 @@ with st.sidebar:
                                         c.id,
                                         st.session_state.user_id,
                                     )
+                                    invalidate_chats_cache()
+                                    invalidate_documents_cache(c.id)
 
                                     if (
                                         st.session_state.current_chat_id
@@ -1806,9 +1845,8 @@ def handle_question(
     current_dm = st.session_state.dm
 
     if st.session_state.current_chat_id:
-        stored_documents = accounts.list_chat_documents(
-            st.session_state.current_chat_id,
-            st.session_state.user_id,
+        stored_documents = get_chat_documents(
+            st.session_state.current_chat_id
         )
         stored_names = {d.filename for d in stored_documents}
         loaded_names = set(current_dm.documents.keys())
@@ -1930,6 +1968,7 @@ def handle_question(
         st.session_state.chat_history,
         chat_id=st.session_state.current_chat_id,
     )
+    invalidate_chats_cache()
 
     st.rerun()
 
@@ -2048,6 +2087,7 @@ if submission:
                     st.session_state.chat_history,
                     chat_id=st.session_state.current_chat_id,
                 )
+                invalidate_chats_cache()
                 st.rerun()
 
         if loaded_names and not question:
