@@ -22,6 +22,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,11 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "documind.db"
 PBKDF2_ITERATIONS = 260_000
 REMEMBER_ME_DAYS = 30
 REMEMBER_ME_SECONDS = REMEMBER_ME_DAYS * 24 * 60 * 60
+
+# Streamlit reruns the app script frequently. Schema creation against a remote
+# database is expensive, so initialize it only once per Python process.
+_DB_INITIALIZED = False
+_DB_INIT_LOCK = threading.Lock()
 
 
 class UsernameTaken(Exception):
@@ -96,58 +102,72 @@ def _connect():
 
 
 def init_db() -> None:
-    with _connect() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                salt BLOB NOT NULL,
-                password_hash BLOB NOT NULL,
-                created_at REAL NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS chats (
-                id TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
-                messages TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS chat_documents (
-                chat_id TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                file_type TEXT NOT NULL,
-                size_bytes INTEGER NOT NULL,
-                data BLOB NOT NULL,
-                created_at REAL NOT NULL,
-                PRIMARY KEY (chat_id, filename),
-                FOREIGN KEY (chat_id) REFERENCES chats(id)
-            )
-            """
-        )
+    """Create the schema once per Python process.
 
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS remember_sessions (
-                token_hash TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                created_at REAL NOT NULL,
-                expires_at REAL NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-            """
-        )
+    Streamlit reruns app.py on interactions. Without this guard, a remote Turso
+    deployment performs four CREATE TABLE network requests on every rerun.
+    """
+    global _DB_INITIALIZED
+    if _DB_INITIALIZED:
+        return
 
+    with _DB_INIT_LOCK:
+        if _DB_INITIALIZED:
+            return
+
+        with _connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    salt BLOB NOT NULL,
+                    password_hash BLOB NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chats (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    messages TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_documents (
+                    chat_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    file_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    data BLOB NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (chat_id, filename),
+                    FOREIGN KEY (chat_id) REFERENCES chats(id)
+                )
+                """
+            )
+    
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS remember_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+                """
+            )
+
+        _DB_INITIALIZED = True
 
 def _hash_password(password: str, salt: bytes) -> bytes:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
