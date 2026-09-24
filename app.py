@@ -14,13 +14,6 @@ from pathlib import Path
 
 import streamlit as st
 
-# Temporary performance diagnostics — output goes to terminal/Streamlit logs.
-_PERF_RUN_START = time.perf_counter()
-
-def _perf(label: str, started: float) -> None:
-    print(f"[PERF] {label}: {time.perf_counter() - started:.3f}s", flush=True)
-
-
 from filewhisperer import FileWhisperer
 from filewhisperer import accounts
 from filewhisperer.loaders import EmptyDocument, UnsupportedFileType
@@ -757,12 +750,14 @@ st.markdown(
 # Accounts / Remember Me
 # ---------------------------------------------------------------------------
 
-_t = time.perf_counter()
 accounts.init_db()
-_perf("accounts.init_db", _t)
-_t = time.perf_counter()
-accounts.cleanup_expired_tokens()
-_perf("accounts.cleanup_expired_tokens", _t)
+
+@st.cache_resource
+def _cleanup_expired_tokens_once() -> bool:
+    accounts.cleanup_expired_tokens()
+    return True
+
+_cleanup_expired_tokens_once()
 
 SIGNUP_CODE = os.environ.get(
     "FILEWHISPERER_SIGNUP_CODE",
@@ -1151,15 +1146,30 @@ def render_bubble(
 
 
 # ---------------------------------------------------------------------------
+# Cached remote database reads
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_list_chats(user_id: int):
+    return accounts.list_chats(user_id)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_list_chat_documents(chat_id: str, user_id: int):
+    return accounts.list_chat_documents(chat_id, user_id)
+
+
+def _refresh_remote_caches() -> None:
+    _cached_list_chats.clear()
+    _cached_list_chat_documents.clear()
+
+
+# ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
 
 if "dm" not in st.session_state:
-    _t = time.perf_counter()
-    _t = time.perf_counter()
     st.session_state.dm = FileWhisperer()
-    _perf("FileWhisperer reset", _t)
-    _perf("FileWhisperer initial init", _t)
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -1218,12 +1228,7 @@ def load_chat_documents(chat_id: str) -> None:
     """Rebuild the in-memory RAG index from documents saved for this chat."""
     reset_document_manager()
 
-    _t = time.perf_counter()
-    documents = accounts.list_chat_documents(
-        chat_id,
-        st.session_state.user_id,
-    )
-    _perf("list_chat_documents", _t)
+    documents = _cached_list_chat_documents(chat_id, st.session_state.user_id)
 
     for stored in documents:
         suffix = Path(stored.filename).suffix
@@ -1272,6 +1277,7 @@ def ingest_uploaded_file(
             display_name=uploaded_file.name,
         )
 
+        _refresh_remote_caches()
         accounts.save_chat_document(
             chat_id=chat_id,
             user_id=st.session_state.user_id,
@@ -1378,7 +1384,8 @@ def load_sample_report() -> None:
                 except Exception:
                     pass
 
-            accounts.save_chat_document(
+            _refresh_remote_caches()
+        accounts.save_chat_document(
                 chat_id=st.session_state.current_chat_id,
                 user_id=st.session_state.user_id,
                 filename=sample_path.name,
@@ -1414,12 +1421,7 @@ def render_document_viewer(chat_id: str | None) -> None:
     if not chat_id or not filename:
         return
 
-    _t = time.perf_counter()
-    documents = accounts.list_chat_documents(
-        chat_id,
-        st.session_state.user_id,
-    )
-    _perf("list_chat_documents", _t)
+    documents = _cached_list_chat_documents(chat_id, st.session_state.user_id)
     document = next(
         (item for item in documents if item.filename == filename),
         None,
@@ -1483,12 +1485,7 @@ def render_chat_documents(
             st.caption("No documents attached to this chat yet.")
         return
 
-    _t = time.perf_counter()
-    documents = accounts.list_chat_documents(
-        chat_id,
-        st.session_state.user_id,
-    )
-    _perf("list_chat_documents", _t)
+    documents = _cached_list_chat_documents(chat_id, st.session_state.user_id)
 
     if sidebar:
         st.markdown("### Documents")
@@ -1544,6 +1541,7 @@ def render_chat_documents(
                             help="Remove document from this chat",
                             use_container_width=True,
                         ):
+                            _refresh_remote_caches()
                             accounts.delete_chat_document(
                                 chat_id,
                                 st.session_state.user_id,
@@ -1645,11 +1643,7 @@ with st.sidebar:
 
         st.markdown("### Chats")
 
-        _t = time.perf_counter()
-        saved_chats = accounts.list_chats(
-            st.session_state.user_id
-        )
-        _perf("list_chats", _t)
+        saved_chats = _cached_list_chats(st.session_state.user_id)
 
         if saved_chats:
             for c in saved_chats:
@@ -1670,6 +1664,7 @@ with st.sidebar:
                             key=f"rename_save_{c.id}",
                             use_container_width=True,
                         ):
+                            _refresh_remote_caches()
                             accounts.rename_chat(
                                 c.id,
                                 st.session_state.user_id,
@@ -1744,6 +1739,7 @@ with st.sidebar:
                                     key=f"del_{c.id}",
                                     help="Delete",
                                 ):
+                                    _refresh_remote_caches()
                                     accounts.delete_chat(
                                         c.id,
                                         st.session_state.user_id,
@@ -1834,12 +1830,7 @@ def handle_question(
     current_dm = st.session_state.dm
 
     if st.session_state.current_chat_id:
-        _t = time.perf_counter()
-        stored_documents = accounts.list_chat_documents(
-            st.session_state.current_chat_id,
-            st.session_state.user_id,
-        )
-        _perf("question list_chat_documents", _t)
+        stored_documents = _cached_list_chat_documents(st.session_state.current_chat_id, st.session_state.user_id)
         stored_names = {d.filename for d in stored_documents}
         loaded_names = set(current_dm.documents.keys())
 
@@ -1873,13 +1864,11 @@ def handle_question(
             ]
 
             try:
-                _t = time.perf_counter()
                 answer, sources = dm.ask_with_sources(
                     q,
                     history=api_history,
                     document_names=document_names,
                 )
-                _perf("ask_with_sources", _t)
 
             except RuntimeError as e:
                 answer = str(e)
@@ -1957,13 +1946,11 @@ def handle_question(
         source_data,
     )
 
-    _t = time.perf_counter()
     st.session_state.current_chat_id = accounts.save_chat(
         st.session_state.user_id,
         st.session_state.chat_history,
         chat_id=st.session_state.current_chat_id,
     )
-    _perf("save_chat after answer", _t)
 
     st.rerun()
 
@@ -2014,8 +2001,6 @@ if not st.session_state.chat_history:
             unsafe_allow_html=True,
         )
 
-
-_perf("page render before chat_input", _PERF_RUN_START)
 
 # ---------------------------------------------------------------------------
 # Chat input with native multi-file attachments
