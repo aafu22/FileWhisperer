@@ -35,44 +35,93 @@ class TfidfRetriever:
 
     def __init__(self, chunks: list[Chunk]):
         self.chunks = chunks
-        self._term_freqs: list[Counter] = [Counter(_tokenize(c.text)) for c in chunks]
+        self._term_freqs: list[Counter] = [
+            Counter(_tokenize(c.text)) for c in chunks
+        ]
+
         self._doc_freq: Counter = Counter()
+
         for tf in self._term_freqs:
             self._doc_freq.update(tf.keys())
+
         self._n_docs = max(len(chunks), 1)
+
         self._idf = {
             term: math.log((self._n_docs + 1) / (df + 1)) + 1
             for term, df in self._doc_freq.items()
         }
-        self._vectors = [self._to_vector(tf) for tf in self._term_freqs]
+
+        self._vectors = [
+            self._to_vector(tf)
+            for tf in self._term_freqs
+        ]
 
     def _to_vector(self, tf: Counter) -> dict[str, float]:
-        return {term: count * self._idf.get(term, 0.0) for term, count in tf.items()}
+        return {
+            term: count * self._idf.get(term, 0.0)
+            for term, count in tf.items()
+        }
 
     @staticmethod
-    def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
+    def _cosine(
+        a: dict[str, float],
+        b: dict[str, float],
+    ) -> float:
         shared = set(a) & set(b)
+
         if not shared:
             return 0.0
+
         dot = sum(a[t] * b[t] for t in shared)
-        norm_a = math.sqrt(sum(v * v for v in a.values()))
-        norm_b = math.sqrt(sum(v * v for v in b.values()))
+
+        norm_a = math.sqrt(
+            sum(v * v for v in a.values())
+        )
+
+        norm_b = math.sqrt(
+            sum(v * v for v in b.values())
+        )
+
         if norm_a == 0 or norm_b == 0:
             return 0.0
+
         return dot / (norm_a * norm_b)
 
-    def top_k(self, query: str, k: int = 6) -> list[tuple[Chunk, float]]:
+    def top_k(
+        self,
+        query: str,
+        k: int = 6,
+    ) -> list[tuple[Chunk, float]]:
+        """Return the most relevant chunks for a query.
+
+        Only chunks with a positive TF-IDF similarity score are returned.
+        If no chunks match the query, an empty list is returned instead of
+        falling back to unrelated document chunks.
+        """
+
         if not self.chunks:
             return []
+
         query_tf = Counter(_tokenize(query))
         query_vec = self._to_vector(query_tf)
+
         scored = [
             (chunk, self._cosine(query_vec, vec))
-            for chunk, vec in zip(self.chunks, self._vectors)
+            for chunk, vec in zip(
+                self.chunks,
+                self._vectors,
+            )
         ]
-        scored.sort(key=lambda pair: pair[1], reverse=True)
-        # Fall back to the first few chunks of each doc if nothing scored
-        # (e.g. a one-word query with no term overlap).
-        if all(score == 0 for _, score in scored):
-            return scored[:k]
-        return [pair for pair in scored if pair[1] > 0][:k]
+
+        scored.sort(
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
+
+        # Only return chunks that actually match the query.
+        # If nothing matches, return no sources instead of unrelated chunks.
+        return [
+            pair
+            for pair in scored
+            if pair[1] > 0
+        ][:k]

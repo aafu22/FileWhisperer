@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import sqlite3
 import time
@@ -57,12 +58,36 @@ class Chat:
     messages: list[dict] = field(default_factory=list)
 
 
+@dataclass
+class ChatDocument:
+    chat_id: str
+    filename: str
+    file_type: str
+    size_bytes: int
+    data: bytes
+    created_at: float
+
+
 @contextmanager
 def _connect():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")  # safer for concurrent Streamlit sessions
-    conn.row_factory = sqlite3.Row
+    """Use persistent Turso Cloud in deployment; local SQLite otherwise."""
+    turso_url = os.getenv("TURSO_DATABASE_URL", "").strip()
+    turso_token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+
+    if turso_url and turso_token:
+        try:
+            import turso_serverless
+        except ImportError as exc:
+            raise RuntimeError(
+                "Turso credentials are configured but turso_serverless is not installed. "
+                "Add turso_serverless to requirements.txt."
+            ) from exc
+        conn = turso_serverless.connect(turso_url, auth_token=turso_token)
+    else:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("PRAGMA journal_mode=WAL")
+
     try:
         yield conn
         conn.commit()
@@ -98,6 +123,21 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS chat_documents (
+                chat_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                data BLOB NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (chat_id, filename),
+                FOREIGN KEY (chat_id) REFERENCES chats(id)
+            )
+            """
+        )
+
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS remember_sessions (
                 token_hash TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL,
@@ -130,9 +170,16 @@ def create_user(username: str, password: str) -> int:
                 "INSERT INTO users (username, salt, password_hash, created_at) VALUES (?, ?, ?, ?)",
                 (username, salt, password_hash, time.time()),
             )
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
+            # SQLite and Turso use different exception classes for UNIQUE violations.
+            message = str(e).lower()
+            if "unique" not in message and "constraint" not in message:
+                raise
             raise UsernameTaken(f'The name "{username}" is already taken.') from e
-        return cur.lastrowid
+
+        # Avoid driver-specific lastrowid behavior. Username is UNIQUE, so this is reliable.
+        row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        return int(row[0])
 
 
 def authenticate(username: str, password: str) -> int:
@@ -147,11 +194,11 @@ def authenticate(username: str, password: str) -> int:
     if row is None:
         raise InvalidCredentials("Incorrect username or password.")
 
-    candidate = _hash_password(password, row["salt"])
-    if not secrets.compare_digest(candidate, row["password_hash"]):
+    candidate = _hash_password(password, row[1])
+    if not secrets.compare_digest(candidate, row[2]):
         raise InvalidCredentials("Incorrect username or password.")
 
-    return row["id"]
+    return row[0]
 
 
 # --- remember-me sessions ----------------------------------------------
@@ -202,14 +249,14 @@ def authenticate_remember_token(token: str) -> tuple[int, str] | None:
         if row is None:
             return None
 
-        if row["expires_at"] <= now:
+        if row[2] <= now:
             conn.execute(
                 "DELETE FROM remember_sessions WHERE token_hash = ?",
                 (token_hash,),
             )
             return None
 
-        return row["user_id"], row["username"]
+        return row[0], row[1]
 
 
 def revoke_remember_token(token: str) -> None:
@@ -246,13 +293,25 @@ def save_chat(user_id: int, messages: list[dict], chat_id: str | None = None, na
         existing = conn.execute("SELECT created_at, name FROM chats WHERE id = ?", (chat_id,)).fetchone()
 
         if name is None:
-            if existing is not None:
-                name = existing["name"]
-            else:
-                first_user_msg = next((m["content"] for m in messages if m["role"] == "user"), "")
-                name = first_user_msg.strip().replace("\n", " ")[:60] or "Untitled chat"
+            first_user_msg = next(
+                (m["content"] for m in messages if m["role"] == "user"),
+                "",
+            )
+            generated_name = (
+                first_user_msg.strip().replace("\n", " ")[:60]
+                or "Untitled chat"
+            )
 
-        created_at = existing["created_at"] if existing is not None else now
+            if existing is not None:
+                existing_name = existing[1]
+                if existing_name in {"New chat", "Untitled chat"} and first_user_msg.strip():
+                    name = generated_name
+                else:
+                    name = existing_name
+            else:
+                name = generated_name
+
+        created_at = existing[0] if existing is not None else now
 
         conn.execute(
             """
@@ -275,7 +334,7 @@ def list_chats(user_id: int) -> list[ChatSummary]:
             "SELECT id, name, created_at, updated_at FROM chats WHERE user_id = ? ORDER BY updated_at DESC",
             (user_id,),
         ).fetchall()
-    return [ChatSummary(id=r["id"], name=r["name"], created_at=r["created_at"], updated_at=r["updated_at"]) for r in rows]
+    return [ChatSummary(id=r[0], name=r[1], created_at=r[2], updated_at=r[3]) for r in rows]
 
 
 def load_chat(chat_id: str, user_id: int) -> Chat | None:
@@ -290,13 +349,111 @@ def load_chat(chat_id: str, user_id: int) -> Chat | None:
     if row is None:
         return None
     return Chat(
-        id=row["id"],
-        user_id=row["user_id"],
-        name=row["name"],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        messages=json.loads(row["messages"]),
+        id=row[0],
+        user_id=row[1],
+        name=row[2],
+        created_at=row[3],
+        updated_at=row[4],
+        messages=json.loads(row[5]),
     )
+
+
+# --- chat documents -------------------------------------------------------
+
+def save_chat_document(
+    chat_id: str,
+    user_id: int,
+    filename: str,
+    file_type: str,
+    data: bytes,
+) -> None:
+    """Persist one uploaded document for a chat owned by this user."""
+    filename = filename.strip()
+    if not filename:
+        raise ValueError("Document filename can't be empty.")
+
+    with _connect() as conn:
+        chat = conn.execute(
+            "SELECT id FROM chats WHERE id = ? AND user_id = ?",
+            (chat_id, user_id),
+        ).fetchone()
+
+        if chat is None:
+            raise ValueError("Chat not found.")
+
+        conn.execute(
+            """
+            INSERT INTO chat_documents
+                (chat_id, filename, file_type, size_bytes, data, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id, filename) DO UPDATE SET
+                file_type = excluded.file_type,
+                size_bytes = excluded.size_bytes,
+                data = excluded.data,
+                created_at = excluded.created_at
+            """,
+            (
+                chat_id,
+                filename,
+                file_type or "",
+                len(data),
+                data,
+                time.time(),
+            ),
+        )
+
+
+def list_chat_documents(
+    chat_id: str,
+    user_id: int,
+) -> list[ChatDocument]:
+    """Return all documents belonging to a chat owned by this user."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT cd.chat_id, cd.filename, cd.file_type,
+                   cd.size_bytes, cd.data, cd.created_at
+            FROM chat_documents cd
+            JOIN chats c ON c.id = cd.chat_id
+            WHERE cd.chat_id = ? AND c.user_id = ?
+            ORDER BY cd.created_at ASC
+            """,
+            (chat_id, user_id),
+        ).fetchall()
+
+    return [
+        ChatDocument(
+            chat_id=row[0],
+            filename=row[1],
+            file_type=row[2],
+            size_bytes=row[3],
+            data=bytes(row[4]),
+            created_at=row[5],
+        )
+        for row in rows
+    ]
+
+
+def delete_chat_document(
+    chat_id: str,
+    user_id: int,
+    filename: str,
+) -> None:
+    """Delete one document from a chat owned by this user."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            DELETE FROM chat_documents
+            WHERE chat_id = ?
+              AND filename = ?
+              AND EXISTS (
+                  SELECT 1 FROM chats
+                  WHERE chats.id = chat_documents.chat_id
+                    AND chats.user_id = ?
+              )
+            """,
+            (chat_id, filename, user_id),
+        )
 
 
 def rename_chat(chat_id: str, user_id: int, new_name: str) -> None:
@@ -309,4 +466,12 @@ def rename_chat(chat_id: str, user_id: int, new_name: str) -> None:
 
 def delete_chat(chat_id: str, user_id: int) -> None:
     with _connect() as conn:
-        conn.execute("DELETE FROM chats WHERE id = ? AND user_id = ?", (chat_id, user_id))
+        conn.execute(
+            "DELETE FROM chat_documents WHERE chat_id = ? AND EXISTS "
+            "(SELECT 1 FROM chats WHERE chats.id = chat_documents.chat_id AND chats.user_id = ?)",
+            (chat_id, user_id),
+        )
+        conn.execute(
+            "DELETE FROM chats WHERE id = ? AND user_id = ?",
+            (chat_id, user_id),
+        )
