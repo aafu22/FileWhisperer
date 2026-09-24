@@ -737,6 +737,32 @@ div[class*="st-key-panel_profile"] .stButton button {
     }
 }
 
+
+/* --- Compact document actions --- */
+div[class*="st-key-docactions_"] {
+    opacity: 1 !important;
+}
+div[class*="st-key-docactions_"] [data-testid="stHorizontalBlock"] {
+    gap: 0.2rem !important;
+}
+div[class*="st-key-docactions_"] .stButton button {
+    width: 2rem !important;
+    min-width: 2rem !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    padding: 0 !important;
+    border-radius: 7px !important;
+    border: 1px solid transparent !important;
+    background: transparent !important;
+    color: var(--ink-muted) !important;
+    font-size: 0.9rem !important;
+}
+div[class*="st-key-docactions_"] .stButton button:hover {
+    background: var(--accent-soft) !important;
+    border-color: var(--border) !important;
+    color: var(--ink) !important;
+}
+
 </style>
 """
 
@@ -1506,7 +1532,7 @@ def render_chat_documents(
             with st.container(
                 key=f"docrow_{chat_id}_{document.filename}"
             ):
-                card_col, btn_col = st.columns([5, 1])
+                card_col, actions_col = st.columns([4.8, 1.6])
 
                 with card_col:
                     st.markdown(
@@ -1522,36 +1548,37 @@ def render_chat_documents(
                         unsafe_allow_html=True,
                     )
 
-                with btn_col:
+                with actions_col:
                     with st.container(
                         key=f"docactions_{chat_id}_{document.filename}"
                     ):
-                        if st.button(
-                            "View",
-                            key=f"view_{chat_id}_{document.filename}",
-                            help="View this file",
-                            use_container_width=True,
-                        ):
-                            st.session_state.viewing_document_name = document.filename
-                            st.rerun()
+                        view_col, delete_col = st.columns(2, gap="small")
 
-                        if st.button(
-                            "🗑",
-                            key=f"remove_{chat_id}_{document.filename}",
-                            help="Remove document from this chat",
-                            use_container_width=True,
-                        ):
-                            _refresh_remote_caches()
-                            accounts.delete_chat_document(
-                                chat_id,
-                                st.session_state.user_id,
-                                document.filename,
-                            )
-                            if st.session_state.viewing_document_name == document.filename:
-                                st.session_state.viewing_document_name = None
-                            reset_document_manager()
-                            load_chat_documents(chat_id)
-                            st.rerun()
+                        with view_col:
+                            if st.button(
+                                "◉",
+                                key=f"view_{chat_id}_{document.filename}",
+                                help="View file",
+                            ):
+                                st.session_state.viewing_document_name = document.filename
+                                st.rerun()
+
+                        with delete_col:
+                            if st.button(
+                                "🗑",
+                                key=f"remove_{chat_id}_{document.filename}",
+                                help="Delete file",
+                            ):
+                                accounts.delete_chat_document(
+                                    chat_id,
+                                    st.session_state.user_id,
+                                    document.filename,
+                                )
+                                if st.session_state.viewing_document_name == document.filename:
+                                    st.session_state.viewing_document_name = None
+                                reset_document_manager()
+                                load_chat_documents(chat_id)
+                                st.rerun()
 
         return
 
