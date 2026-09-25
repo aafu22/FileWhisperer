@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 
 import streamlit as st
-from streamlit_cookies_manager import CookieManager
 
 from filewhisperer import FileWhisperer
 from filewhisperer import accounts
@@ -31,13 +30,6 @@ st.set_page_config(
     initial_sidebar_state="auto",
 )
 
-# Persistent browser storage for Remember Me.
-# The token itself is random; only its SHA-256 hash is stored server-side in Turso.
-cookies = CookieManager()
-if not cookies.ready():
-    st.stop()
-
-REMEMBER_COOKIE = "filewhisperer_remember"
 
 
 # ---------------------------------------------------------------------------
@@ -799,77 +791,15 @@ SIGNUP_CODE = os.environ.get(
     os.environ.get("DOCUMIND_SIGNUP_CODE", ""),
 ).strip()
 
-# 30-day Remember Me.
-# The browser keeps the random token in a persistent cookie. Turso stores only
-# the token hash and enforces the 30-day expiry.
-REMEMBER_ME_SECONDS = 30 * 24 * 60 * 60
-
-
-def get_remember_token_from_browser() -> str | None:
-    """Read the persistent login token from the browser cookie."""
-    try:
-        token = cookies.get(REMEMBER_COOKIE)
-        return token.strip() if isinstance(token, str) and token.strip() else None
-    except Exception:
-        return None
-
-
-def set_remember_token_in_browser(token: str) -> None:
-    """Persist the remember-me token in the browser."""
-    if not token:
-        return
-    cookies[REMEMBER_COOKIE] = token
-    cookies.save()
-
-
-def delete_remember_token_from_browser() -> None:
-    """Remove the remember-me token from the browser."""
-    try:
-        if cookies.get(REMEMBER_COOKIE) is not None:
-            del cookies[REMEMBER_COOKIE]
-            cookies.save()
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Authentication state
-# ---------------------------------------------------------------------------
+# Authentication state.
+# Login lasts for the current Streamlit browser session. Accounts, chats and
+# documents remain persistent in the configured database.
 
 if "user_id" not in st.session_state:
     st.session_state.user_id = None
 
 if "username" not in st.session_state:
     st.session_state.username = None
-
-if "remember_token" not in st.session_state:
-    st.session_state.remember_token = None
-
-
-# ---------------------------------------------------------------------------
-# Restore Remember Me session
-# ---------------------------------------------------------------------------
-
-if st.session_state.user_id is None:
-
-    remember_token = get_remember_token_from_browser()
-
-    if remember_token:
-        try:
-            session = accounts.authenticate_remember_token(
-                remember_token
-            )
-
-            if session:
-                (
-                    st.session_state.user_id,
-                    st.session_state.username,
-                ) = session
-                st.session_state.remember_token = remember_token
-
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -938,12 +868,6 @@ if st.session_state.user_id is None:
                         key="li_password",
                     )
 
-                    remember_me = st.checkbox(
-                        "Remember me for 30 days",
-                        value=True,
-                        key="remember_me",
-                    )
-
                     if st.form_submit_button(
                         "Log in",
                         use_container_width=True,
@@ -962,24 +886,6 @@ if st.session_state.user_id is None:
                                 li_username.strip()
                             )
 
-                            if remember_me:
-
-                                token = (
-                                    accounts.create_remember_token(
-                                        user_id
-                                    )
-                                )
-
-                                st.session_state.remember_token = token
-
-                                set_remember_token_in_browser(
-                                    token
-                                )
-
-                            else:
-                                st.session_state.remember_token = None
-
-                                delete_remember_token_from_browser()
 
 
                         except accounts.InvalidCredentials as e:
@@ -1067,20 +973,7 @@ if st.session_state.user_id is None:
                                     su_username.strip()
                                 )
 
-                                token = (
-                                    accounts.create_remember_token(
-                                        user_id
-                                    )
-                                )
 
-                                st.session_state.remember_token = token
-
-                                set_remember_token_in_browser(
-                                    token
-                                )
-
-                                # The V2 cookie component triggers the rerun
-                                # after the browser has completed the operation.
 
                             except (
                                 accounts.UsernameTaken,
@@ -1640,29 +1533,13 @@ with st.sidebar:
 
             st.divider()
 
-            st.caption(
-                "Remember Me is active for up to "
-                "30 days when enabled at login."
-            )
-
             if st.button(
                 "Log out",
                 use_container_width=True,
                 key="profile_logout",
             ):
-                remember_token = st.session_state.remember_token
-
-                if not remember_token:
-                    remember_token = get_remember_token_from_browser()
-
-                if remember_token:
-                    accounts.revoke_remember_token(remember_token)
-
-                delete_remember_token_from_browser()
-
                 st.session_state.user_id = None
                 st.session_state.username = None
-                st.session_state.remember_token = None
                 st.session_state.chat_history = []
                 st.session_state.current_chat_id = None
                 reset_document_manager()
