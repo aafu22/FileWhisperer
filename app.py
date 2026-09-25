@@ -786,6 +786,7 @@ st.markdown(
 # ---------------------------------------------------------------------------
 
 accounts.init_db()
+st.caption(f"backend={'turso' if os.getenv('TURSO_DATABASE_URL') else 'sqlite'} · url_set={bool(os.getenv('TURSO_DATABASE_URL'))} · token_set={bool(os.getenv('TURSO_AUTH_TOKEN'))}")
 
 @st.cache_resource
 def _cleanup_expired_tokens_once() -> bool:
