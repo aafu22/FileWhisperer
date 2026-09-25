@@ -928,7 +928,7 @@ if st.session_state.user_id is None:
                     )
 
                     remember_me = st.checkbox(
-                        "Remember me",
+                        "Remember me for 30 days",
                         value=True,
                         key="remember_me",
                     )
@@ -1627,8 +1627,8 @@ with st.sidebar:
             st.divider()
 
             st.caption(
-                "Remember Me can restore your session when the saved "
-                "login link is preserved."
+                "Remember Me is active for up to "
+                "30 days when enabled at login."
             )
 
             if st.button(
