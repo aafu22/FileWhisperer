@@ -1189,6 +1189,7 @@ def _refresh_remote_caches() -> None:
     _cached_list_chats.clear()
     _cached_list_chat_documents.clear()
 
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
@@ -1531,7 +1532,6 @@ def render_chat_documents(
             with st.container(
                 key=f"docrow_{chat_id}_{document.filename}"
             ):
-                card_col, btn_col = st.columns([5, 1])
                 card_col, actions_col = st.columns([4.8, 1.6])
 
                 with card_col:
@@ -1548,37 +1548,10 @@ def render_chat_documents(
                         unsafe_allow_html=True,
                     )
 
-                with btn_col:
                 with actions_col:
                     with st.container(
                         key=f"docactions_{chat_id}_{document.filename}"
                     ):
-                        if st.button(
-                            "View",
-                            key=f"view_{chat_id}_{document.filename}",
-                            help="View this file",
-                            use_container_width=True,
-                        ):
-                            st.session_state.viewing_document_name = document.filename
-                            st.rerun()
-
-                        if st.button(
-                            "🗑",
-                            key=f"remove_{chat_id}_{document.filename}",
-                            help="Remove document from this chat",
-                            use_container_width=True,
-                        ):
-                            _refresh_remote_caches()
-                            accounts.delete_chat_document(
-                                chat_id,
-                                st.session_state.user_id,
-                                document.filename,
-                            )
-                            if st.session_state.viewing_document_name == document.filename:
-                                st.session_state.viewing_document_name = None
-                            reset_document_manager()
-                            load_chat_documents(chat_id)
-                            st.rerun()
                         view_col, delete_col = st.columns(2, gap="small")
 
                         with view_col:
