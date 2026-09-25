@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import streamlit as st
+from streamlit_cookies_manager import CookieManager
 
 from filewhisperer import FileWhisperer
 from filewhisperer import accounts
@@ -29,6 +30,14 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="auto",
 )
+
+# Persistent browser storage for Remember Me.
+# The token itself is random; only its SHA-256 hash is stored server-side in Turso.
+cookies = CookieManager()
+if not cookies.ready():
+    st.stop()
+
+REMEMBER_COOKIE = "filewhisperer_remember"
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +293,36 @@ div[class*="st-key-auth_card"]
 .dm-bubble.user li,
 .dm-bubble.user span {
     color: white;
+}
+
+/* Documents attached to a specific user question. */
+.dm-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.5rem;
+}
+
+.dm-attachment {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    max-width: 100%;
+    padding: 0.28rem 0.5rem;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 7px;
+    background: rgba(0, 0, 0, 0.16);
+    color: white !important;
+    font-size: 0.76rem;
+    line-height: 1.2;
+}
+
+.dm-attachment-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 30rem;
+    color: white !important;
 }
 
 .dm-bubble.assistant {
@@ -707,6 +746,32 @@ div[class*="st-key-panel_profile"] .stButton button {
     }
 }
 
+
+/* --- Compact document actions --- */
+div[class*="st-key-docactions_"] {
+    opacity: 1 !important;
+}
+div[class*="st-key-docactions_"] [data-testid="stHorizontalBlock"] {
+    gap: 0.2rem !important;
+}
+div[class*="st-key-docactions_"] .stButton button {
+    width: 2rem !important;
+    min-width: 2rem !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    padding: 0 !important;
+    border-radius: 7px !important;
+    border: 1px solid transparent !important;
+    background: transparent !important;
+    color: var(--ink-muted) !important;
+    font-size: 0.9rem !important;
+}
+div[class*="st-key-docactions_"] .stButton button:hover {
+    background: var(--accent-soft) !important;
+    border-color: var(--border) !important;
+    color: var(--ink) !important;
+}
+
 </style>
 """
 
@@ -721,40 +786,49 @@ st.markdown(
 # ---------------------------------------------------------------------------
 
 accounts.init_db()
-accounts.cleanup_expired_tokens()
+st.caption(f"backend={'turso' if os.getenv('TURSO_DATABASE_URL') else 'sqlite'} · url_set={bool(os.getenv('TURSO_DATABASE_URL'))} · token_set={bool(os.getenv('TURSO_AUTH_TOKEN'))}")
+
+@st.cache_resource
+def _cleanup_expired_tokens_once() -> bool:
+    accounts.cleanup_expired_tokens()
+    return True
+
+_cleanup_expired_tokens_once()
 
 SIGNUP_CODE = os.environ.get(
     "FILEWHISPERER_SIGNUP_CODE",
     os.environ.get("DOCUMIND_SIGNUP_CODE", ""),
 ).strip()
 
-# Simple 30-day Remember Me:
-# the token is kept in Streamlit's URL query parameters instead of relying
-# on browser cookies, which avoids the cookie round-trip issue on Streamlit
-# Community Cloud.
-REMEMBER_QUERY_PARAM = "remember"
+# 30-day Remember Me.
+# The browser keeps the random token in a persistent cookie. Turso stores only
+# the token hash and enforces the 30-day expiry.
 REMEMBER_ME_SECONDS = 30 * 24 * 60 * 60
 
 
-def get_remember_token_from_url() -> str | None:
-    """Read the persistent login token from the current URL."""
+def get_remember_token_from_browser() -> str | None:
+    """Read the persistent login token from the browser cookie."""
     try:
-        token = st.query_params.get(REMEMBER_QUERY_PARAM)
-        return token.strip() if token else None
+        token = cookies.get(REMEMBER_COOKIE)
+        return token.strip() if isinstance(token, str) and token.strip() else None
     except Exception:
         return None
 
 
-def set_remember_token_in_url(token: str) -> None:
-    """Persist the remember-me token in the browser URL."""
-    if token:
-        st.query_params[REMEMBER_QUERY_PARAM] = token
+def set_remember_token_in_browser(token: str) -> None:
+    """Persist the remember-me token in the browser."""
+    if not token:
+        return
+    cookies[REMEMBER_COOKIE] = token
+    cookies.save()
 
 
-def delete_remember_token_from_url() -> None:
-    """Remove the remember-me token from the browser URL."""
+def delete_remember_token_from_browser() -> None:
+    """Remove the remember-me token from the browser."""
     try:
-        del st.query_params[REMEMBER_QUERY_PARAM]
+        if cookies.get(REMEMBER_COOKIE) is not None:
+            del cookies[REMEMBER_COOKIE]
+            cookies.save()
     except Exception:
         pass
 
@@ -780,7 +854,7 @@ if "remember_token" not in st.session_state:
 
 if st.session_state.user_id is None:
 
-    remember_token = get_remember_token_from_url()
+    remember_token = get_remember_token_from_browser()
 
     if remember_token:
         try:
@@ -795,8 +869,8 @@ if st.session_state.user_id is None:
                 ) = session
                 st.session_state.remember_token = remember_token
 
-        except Exception:
-            pass
+        except Exception as e:
+            st.error(f"Remember-me restore failed: {e!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -899,14 +973,14 @@ if st.session_state.user_id is None:
 
                                 st.session_state.remember_token = token
 
-                                set_remember_token_in_url(
+                                set_remember_token_in_browser(
                                     token
                                 )
 
                             else:
                                 st.session_state.remember_token = None
 
-                                delete_remember_token_from_url()
+                                delete_remember_token_from_browser()
 
 
                         except accounts.InvalidCredentials as e:
@@ -1002,7 +1076,7 @@ if st.session_state.user_id is None:
 
                                 st.session_state.remember_token = token
 
-                                set_remember_token_in_url(
+                                set_remember_token_in_browser(
                                     token
                                 )
 
@@ -1053,7 +1127,16 @@ def render_bubble(
     role: str,
     content: str,
     sources: list | None = None,
+    attachments: list[str] | None = None,
 ) -> None:
+    """Render one chat bubble.
+
+    Documents are shown on the *user* message that asked about them, rather
+    than as one global attachment/source strip above the conversation.
+    ``attachments`` is a snapshot saved with that individual message, so
+    opening an old chat does not make old questions appear to use documents
+    that were uploaded later.
+    """
 
     css_role = (
         "user"
@@ -1061,98 +1144,62 @@ def render_bubble(
         else "assistant"
     )
 
+    attachment_html = ""
+
+    if css_role == "user" and attachments:
+        chips = []
+
+        seen = set()
+
+        for name in attachments:
+            if not name or name in seen:
+                continue
+
+            seen.add(name)
+            safe_name = html.escape(str(name))
+
+            chips.append(
+                '<span class="dm-attachment">'
+                '<span>📄</span>'
+                f'<span class="dm-attachment-name">{safe_name}</span>'
+                '</span>'
+            )
+
+        if chips:
+            attachment_html = (
+                '<div class="dm-attachments">'
+                + "".join(chips)
+                + '</div>'
+            )
+
     st.markdown(
         f'<div class="dm-row {css_role}">'
         f'<div class="dm-bubble {css_role}">'
+        f'{attachment_html}'
         f'{content}'
         f'</div>'
         f'</div>',
         unsafe_allow_html=True,
     )
 
-    if sources and css_role == "assistant":
 
-        def field(
-            source,
-            name,
-            default=None,
-        ):
+# ---------------------------------------------------------------------------
+# Cached remote database reads
+# ---------------------------------------------------------------------------
 
-            if isinstance(
-                source,
-                dict,
-            ):
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_list_chats(user_id: int):
+    return accounts.list_chats(user_id)
 
-                return source.get(
-                    name,
-                    default,
-                )
 
-            return getattr(
-                source,
-                name,
-                default,
-            )
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_list_chat_documents(chat_id: str, user_id: int):
+    return accounts.list_chat_documents(chat_id, user_id)
 
-        unique = []
-        seen = set()
 
-        for source in sources:
-
-            key = (
-                field(
-                    source,
-                    "doc_name",
-                    "",
-                ),
-                field(
-                    source,
-                    "page",
-                ),
-            )
-
-            if key not in seen:
-
-                seen.add(key)
-                unique.append(source)
-
-        chips = []
-
-        for source in unique:
-
-            doc_name = html.escape(
-                field(
-                    source,
-                    "doc_name",
-                    "Document",
-                )
-            )
-
-            page = field(
-                source,
-                "page",
-            )
-
-            page_text = (
-                f" · {html.escape(str(page))}"
-                if page
-                else ""
-            )
-
-            chips.append(
-                f'<span class="dm-source">'
-                f'📄 {doc_name}{page_text}'
-                f'</span>'
-            )
-
-        st.markdown(
-            '<div class="dm-sources">'
-            '<strong>Sources</strong> &nbsp;'
-            + "".join(chips)
-            + "</div>",
-            unsafe_allow_html=True,
-        )
-
+def _refresh_remote_caches() -> None:
+    _cached_list_chats.clear()
+    _cached_list_chat_documents.clear()
 
 # ---------------------------------------------------------------------------
 # Session state
@@ -1170,122 +1217,150 @@ if "current_chat_id" not in st.session_state:
 if "renaming_chat_id" not in st.session_state:
     st.session_state.renaming_chat_id = None
 
-if "processed_files" not in st.session_state:
-    st.session_state.processed_files = set()
+if "viewing_document_name" not in st.session_state:
+    st.session_state.viewing_document_name = None
 
 
 dm: FileWhisperer = st.session_state.dm
 
 
 # ---------------------------------------------------------------------------
-# Uploaded documents
+# Chat-scoped document management
 # ---------------------------------------------------------------------------
 
-def add_uploaded_file(
-    uploaded_file,
-) -> None:
+SUPPORTED_FILE_TYPES = [
+    "txt",
+    "md",
+    "csv",
+    "json",
+    "log",
+    "pdf",
+    "docx",
+    "xlsx",
+]
 
-    key = (
-        uploaded_file.name,
-        uploaded_file.size,
+
+def reset_document_manager() -> None:
+    """Start a clean document scope for a new/current chat."""
+    st.session_state.dm = FileWhisperer()
+
+
+def ensure_current_chat(name: str | None = None) -> str:
+    """Create a chat row when a document or message needs a chat scope."""
+    chat_id = st.session_state.current_chat_id
+
+    if chat_id:
+        return chat_id
+
+    chat_id = accounts.save_chat(
+        st.session_state.user_id,
+        st.session_state.chat_history,
+        name=name,
     )
+    st.session_state.current_chat_id = chat_id
+    return chat_id
 
-    if key in st.session_state.processed_files:
-        return
 
-    suffix = Path(
-        uploaded_file.name
-    ).suffix
+def load_chat_documents(chat_id: str) -> None:
+    """Rebuild the in-memory RAG index from documents saved for this chat."""
+    reset_document_manager()
+
+    documents = _cached_list_chat_documents(chat_id, st.session_state.user_id)
+
+    for stored in documents:
+        suffix = Path(stored.filename).suffix
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=suffix,
+        ) as tmp:
+            tmp.write(stored.data)
+            tmp_path = tmp.name
+
+        try:
+            st.session_state.dm.add_document(
+                tmp_path,
+                display_name=stored.filename,
+            )
+        except Exception as e:
+            st.sidebar.warning(
+                f'Couldn\'t reload "{stored.filename}": {e}'
+            )
+        finally:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def ingest_uploaded_file(
+    uploaded_file,
+    chat_id: str,
+) -> bool:
+    """Ingest an uploaded file into the current chat and persist its bytes."""
+    data = uploaded_file.getvalue()
+    suffix = Path(uploaded_file.name).suffix
 
     with tempfile.NamedTemporaryFile(
         delete=False,
         suffix=suffix,
     ) as tmp:
-
-        tmp.write(
-            uploaded_file.getvalue()
-        )
-
+        tmp.write(data)
         tmp_path = tmp.name
 
     try:
-
-        dm.add_document(
+        st.session_state.dm.add_document(
             tmp_path,
             display_name=uploaded_file.name,
         )
 
-        st.session_state.processed_files.add(
-            key
+        _refresh_remote_caches()
+        accounts.save_chat_document(
+            chat_id=chat_id,
+            user_id=st.session_state.user_id,
+            filename=uploaded_file.name,
+            file_type=uploaded_file.type or "",
+            data=data,
         )
+
+        return True
 
     except UnsupportedFileType as e:
-
-        st.sidebar.warning(
-            str(e)
-        )
+        st.sidebar.warning(str(e))
+        return False
 
     except EmptyDocument as e:
-
-        st.sidebar.warning(
-            str(e)
-        )
+        st.sidebar.warning(str(e))
+        return False
 
     except Exception as e:
-
         st.sidebar.error(
             f'Couldn\'t read "{uploaded_file.name}": {e}'
         )
+        return False
 
     finally:
-
         for _ in range(3):
-
             try:
-
-                Path(
-                    tmp_path
-                ).unlink(
-                    missing_ok=True
-                )
-
+                Path(tmp_path).unlink(missing_ok=True)
                 break
-
             except PermissionError:
-
                 time.sleep(0.2)
 
 
-# ---------------------------------------------------------------------------
-# Sample quarterly report
-# ---------------------------------------------------------------------------
-
 def load_sample_report() -> None:
-    """Load the bundled sample quarterly report."""
-
-    sample_dir = Path(
-        "sample_documents"
-    )
+    """Create a chat containing the bundled sample quarterly report."""
+    sample_dir = Path("sample_documents")
 
     if not sample_dir.exists():
-
-        st.sidebar.error(
-            "Sample document folder not found."
-        )
-
+        st.sidebar.error("Sample document folder not found.")
         return
 
-    preferred_sample = (
-        sample_dir
-        / "Sample_Quarterly_Report.md"
-    )
+    preferred_sample = sample_dir / "Sample_Quarterly_Report.md"
 
     if preferred_sample.exists():
-
         sample_path = preferred_sample
-
     else:
-
         supported_extensions = {
             ".pdf",
             ".md",
@@ -1298,56 +1373,66 @@ def load_sample_report() -> None:
         sample_files = sorted(
             file
             for file in sample_dir.iterdir()
-            if (
-                file.is_file()
-                and file.suffix.lower()
-                in supported_extensions
-            )
+            if file.is_file()
+            and file.suffix.lower() in supported_extensions
         )
 
         if not sample_files:
-
             st.sidebar.error(
-                "No sample document found "
-                "in sample_documents."
+                "No sample document found in sample_documents."
             )
-
             return
 
         sample_path = sample_files[0]
 
-    key = (
-        sample_path.name,
-        sample_path.stat().st_size,
+    # Always create a fresh sample-report chat. This keeps the sample isolated
+    # from the user's other conversations.
+    st.session_state.chat_history = []
+    st.session_state.current_chat_id = accounts.save_chat(
+        st.session_state.user_id,
+        [],
+        name="Sample Quarterly Report",
     )
 
-    if key in st.session_state.processed_files:
-
-        return
+    reset_document_manager()
 
     try:
+        with st.spinner("Loading sample quarterly report…"):
+            with open(sample_path, "rb") as f:
+                data = f.read()
 
-        with st.spinner(
-            "Loading sample quarterly report…"
-        ):
+            suffix = sample_path.suffix
 
-            dm.add_document(
-                str(sample_path),
-                display_name=sample_path.name,
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=suffix,
+            ) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+
+            try:
+                st.session_state.dm.add_document(
+                    tmp_path,
+                    display_name=sample_path.name,
+                )
+            finally:
+                try:
+                    Path(tmp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            _refresh_remote_caches()
+        accounts.save_chat_document(
+                chat_id=st.session_state.current_chat_id,
+                user_id=st.session_state.user_id,
+                filename=sample_path.name,
+                file_type="text/markdown",
+                data=data,
             )
-
-            st.session_state.processed_files.add(
-                key
-            )
-
-        st.session_state.chat_history = []
-
-        st.session_state.current_chat_id = None
 
         st.rerun()
 
     except Exception as e:
-
         st.sidebar.error(
             f"Couldn't load sample report: {e}"
         )
@@ -1357,102 +1442,98 @@ def load_sample_report() -> None:
 # Formatting
 # ---------------------------------------------------------------------------
 
-def format_size(
-    num_bytes: int,
-) -> str:
-
+def format_size(num_bytes: int) -> str:
     if num_bytes < 1024:
-
         return f"{num_bytes} B"
 
     if num_bytes < 1024 * 1024:
+        return f"{num_bytes / 1024:.1f} KB"
 
-        return (
-            f"{num_bytes / 1024:.1f} KB"
-        )
+    return f"{num_bytes / (1024 * 1024):.1f} MB"
 
-    return (
-        f"{num_bytes / (1024 * 1024):.1f} MB"
+
+def render_document_viewer(chat_id: str | None) -> None:
+    """Show the selected chat document in the main panel."""
+    filename = st.session_state.get("viewing_document_name")
+    if not chat_id or not filename:
+        return
+
+    documents = _cached_list_chat_documents(chat_id, st.session_state.user_id)
+    document = next(
+        (item for item in documents if item.filename == filename),
+        None,
     )
 
-
-# ---------------------------------------------------------------------------
-# Documents section
-# ---------------------------------------------------------------------------
-
-def render_documents_section(
-    key_prefix: str,
-    show_heading: bool = True,
-) -> None:
-
-    if show_heading:
-
-        st.markdown(
-            "### Documents"
-        )
-
-        st.caption(
-            "Add files to ask questions grounded in them."
-        )
+    if document is None:
+        st.session_state.viewing_document_name = None
+        return
 
     st.markdown(
-        '<div class="dm-upload-label">'
-        'Add documents'
-        '</div>',
+        f'<div class="dm-doc-viewer-title">📄 {html.escape(document.filename)}</div>',
         unsafe_allow_html=True,
     )
 
-    uploaded_files = st.file_uploader(
-        "Add documents",
-        type=[
-            "txt",
-            "md",
-            "csv",
-            "json",
-            "log",
-            "pdf",
-            "docx",
-            "xlsx",
-        ],
-        accept_multiple_files=True,
-        key=f"{key_prefix}_uploader",
-        label_visibility="collapsed",
-    )
+    close_col, download_col = st.columns([1, 1])
+    with close_col:
+        if st.button("Close file", key=f"close_view_{chat_id}_{filename}"):
+            st.session_state.viewing_document_name = None
+            st.rerun()
 
-    if uploaded_files:
+    with download_col:
+        st.download_button(
+            "Download file",
+            data=document.data,
+            file_name=document.filename,
+            mime=document.file_type or "application/octet-stream",
+            key=f"download_view_{chat_id}_{filename}",
+            use_container_width=True,
+        )
 
-        for f in uploaded_files:
+    suffix = Path(document.filename).suffix.lower()
 
-            if (
-                f.name,
-                f.size,
-            ) in st.session_state.processed_files:
-
-                continue
-
-            with st.spinner(
-                f'Reading "{f.name}"… '
-                "(scanned PDFs can take a bit longer)"
-            ):
-
-                add_uploaded_file(f)
-
-    if dm.documents:
-
-        for name, doc_size in [
-            (
-                n,
-                len(d.text),
+    if suffix == ".pdf":
+        try:
+            st.pdf(document.data)
+        except Exception:
+            st.info("PDF preview isn't available in this Streamlit build. Use Download file to open it.")
+    else:
+        loaded = st.session_state.dm.documents.get(document.filename)
+        text_content = loaded.text if loaded else ""
+        if text_content.strip():
+            st.text_area(
+                "File contents",
+                value=text_content,
+                height=500,
+                disabled=True,
+                label_visibility="collapsed",
             )
-            for n, d in dm.documents.items()
-        ]:
+        else:
+            st.info("This file was uploaded, but no readable text was extracted from it.")
 
-            safe_name = html.escape(
-                name
-            )
 
+def render_chat_documents(
+    chat_id: str | None,
+    *,
+    sidebar: bool = False,
+) -> None:
+    """Render the files belonging only to the currently open chat."""
+    if not chat_id:
+        if sidebar:
+            st.caption("No documents attached to this chat yet.")
+        return
+
+    documents = _cached_list_chat_documents(chat_id, st.session_state.user_id)
+
+    if sidebar:
+        st.markdown("### Documents")
+        if not documents:
+            st.caption("No documents attached to this chat yet.")
+            return
+
+        for document in documents:
+            safe_name = html.escape(document.filename)
             suffix = (
-                Path(name)
+                Path(document.filename)
                 .suffix
                 .replace(".", "")
                 .upper()
@@ -1460,66 +1541,81 @@ def render_documents_section(
             )
 
             with st.container(
-                key=f"docrow_{key_prefix}_{name}"
+                key=f"docrow_{chat_id}_{document.filename}"
             ):
-
-                card_col, btn_col = st.columns(
-                    [5, 1]
-                )
+                card_col, actions_col = st.columns([4.8, 1.6])
 
                 with card_col:
-
-                    # IMPORTANT:
-                    # This is intentionally kept as one continuous
-                    # HTML string so Streamlit doesn't interpret
-                    # indentation as a Markdown code block.
-
                     st.markdown(
                         f'<div class="dm-doc-card">'
                         f'<span class="glyph">📄</span>'
                         f'<div class="meta">'
                         f'<div class="fname">{safe_name}</div>'
                         f'<div class="fsize">'
-                        f'{suffix} · '
-                        f'{format_size(doc_size)} '
-                        f'of text'
+                        f'{suffix} · {format_size(document.size_bytes)}'
                         f'</div>'
                         f'</div>'
                         f'</div>',
                         unsafe_allow_html=True,
                     )
 
-                with btn_col:
-
+                with actions_col:
                     with st.container(
-                        key=(
-                            f"docactions_"
-                            f"{key_prefix}_"
-                            f"{name}"
-                        )
+                        key=f"docactions_{chat_id}_{document.filename}"
                     ):
+                        view_col, delete_col = st.columns(2, gap="small")
 
-                        if st.button(
-                            "🗑",
-                            key=(
-                                f"{key_prefix}"
-                                f"_remove_"
-                                f"{name}"
-                            ),
-                            help="Remove document",
-                        ):
+                        with view_col:
+                            if st.button(
+                                "◉",
+                                key=f"view_{chat_id}_{document.filename}",
+                                help="View file",
+                            ):
+                                st.session_state.viewing_document_name = document.filename
+                                st.rerun()
 
-                            dm.remove_document(
-                                name
-                            )
+                        with delete_col:
+                            if st.button(
+                                "🗑",
+                                key=f"remove_{chat_id}_{document.filename}",
+                                help="Delete file",
+                            ):
+                                accounts.delete_chat_document(
+                                    chat_id,
+                                    st.session_state.user_id,
+                                    document.filename,
+                                )
+                                _refresh_remote_caches()
+                                if (
+                                    st.session_state.viewing_document_name
+                                    == document.filename
+                                ):
+                                    st.session_state.viewing_document_name = None
+                                reset_document_manager()
+                                load_chat_documents(chat_id)
+                                st.rerun()
 
-                            st.rerun()
+        return
 
-    else:
+    # Main-panel attachment strip.
+    if not documents:
+        return
 
-        st.caption(
-            "No documents yet."
+    chips = []
+
+    for document in documents:
+        safe_name = html.escape(document.filename)
+        chips.append(
+            f'<span class="dm-source">📄 {safe_name}</span>'
         )
+
+    st.markdown(
+        '<div class="dm-sources" style="max-width:100%; margin-bottom:1rem;">'
+        '<strong>In this chat</strong> &nbsp;'
+        + "".join(chips)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1529,29 +1625,18 @@ def render_documents_section(
 with st.sidebar:
 
     # Account
-    with st.container(
-        key="panel_profile"
-    ):
-
+    with st.container(key="panel_profile"):
         st.markdown(
-            f"**👤 "
-            f"{html.escape(st.session_state.username)}"
-            f"**"
+            f"**👤 {html.escape(st.session_state.username)}**"
         )
 
         with st.popover(
             "Account & settings",
             use_container_width=True,
         ):
-
-            st.caption(
-                "Signed in as"
-            )
-
+            st.caption("Signed in as")
             st.markdown(
-                f"**"
-                f"{html.escape(st.session_state.username)}"
-                f"**"
+                f"**{html.escape(st.session_state.username)}**"
             )
 
             st.divider()
@@ -1566,87 +1651,46 @@ with st.sidebar:
                 use_container_width=True,
                 key="profile_logout",
             ):
-
                 remember_token = st.session_state.remember_token
 
                 if not remember_token:
-                    remember_token = get_remember_token_from_url()
+                    remember_token = get_remember_token_from_browser()
 
                 if remember_token:
+                    accounts.revoke_remember_token(remember_token)
 
-                    accounts.revoke_remember_token(
-                        remember_token
-                    )
-
-                delete_remember_token_from_url()
+                delete_remember_token_from_browser()
 
                 st.session_state.user_id = None
                 st.session_state.username = None
                 st.session_state.remember_token = None
                 st.session_state.chat_history = []
                 st.session_state.current_chat_id = None
-                st.session_state.processed_files = set()
+                reset_document_manager()
 
-                # The V2 cookie component triggers the rerun after the
-                # browser has deleted the cookie.
                 st.stop()
 
-    # Documents
-    with st.container(
-        key="panel_documents"
-    ):
-
-        render_documents_section(
-            "sidebar"
-        )
-
-        st.markdown("---")
-
-        # Separate keyed container lets us style only this button.
-        with st.container(
-            key="sample_report_button"
-        ):
-
-            if st.button(
-                "Try sample quarterly report",
-                use_container_width=True,
-                key="sample_report",
-            ):
-
-                load_sample_report()
-
-    # Chats
-    with st.container(
-        key="panel_chats"
-    ):
+    # Chat controls
+    with st.container(key="panel_chats"):
 
         if st.button(
             "+ New chat",
             use_container_width=True,
+            key="new_chat",
         ):
-
             st.session_state.chat_history = []
             st.session_state.current_chat_id = None
-
+            reset_document_manager()
             st.rerun()
 
-        saved_chats = accounts.list_chats(
-            st.session_state.user_id
-        )
+        st.markdown("### Chats")
+
+        saved_chats = _cached_list_chats(st.session_state.user_id)
 
         if saved_chats:
-
-            st.markdown(
-                "### Chats"
-            )
-
             for c in saved_chats:
 
-                if (
-                    st.session_state.renaming_chat_id
-                    == c.id
-                ):
-
+                if st.session_state.renaming_chat_id == c.id:
                     new_name = st.text_input(
                         "Rename",
                         value=c.name,
@@ -1657,62 +1701,44 @@ with st.sidebar:
                     rc1, rc2 = st.columns(2)
 
                     with rc1:
-
                         if st.button(
                             "Save name",
                             key=f"rename_save_{c.id}",
                             use_container_width=True,
                         ):
-
+                            _refresh_remote_caches()
                             accounts.rename_chat(
                                 c.id,
                                 st.session_state.user_id,
                                 new_name,
                             )
-
                             st.session_state.renaming_chat_id = None
-
                             st.rerun()
 
                     with rc2:
-
                         if st.button(
                             "Cancel",
                             key=f"rename_cancel_{c.id}",
                             use_container_width=True,
                         ):
-
                             st.session_state.renaming_chat_id = None
-
                             st.rerun()
 
                 else:
-
-                    with st.container(
-                        key=f"chatrow_{c.id}"
-                    ):
-
-                        name_col, edit_col, del_col = (
-                            st.columns(
-                                [5, 1, 1],
-                                vertical_alignment="center",
-                            )
+                    with st.container(key=f"chatrow_{c.id}"):
+                        name_col, edit_col, del_col = st.columns(
+                            [5, 1, 1],
+                            vertical_alignment="center",
                         )
 
                         with name_col:
-
-                            with st.container(
-                                key=f"chatopen_{c.id}"
-                            ):
-
+                            with st.container(key=f"chatopen_{c.id}"):
                                 label = (
                                     c.name
                                     + (
                                         " •"
-                                        if (
-                                            c.id
-                                            == st.session_state.current_chat_id
-                                        )
+                                        if c.id
+                                        == st.session_state.current_chat_id
                                         else ""
                                     )
                                 )
@@ -1723,56 +1749,39 @@ with st.sidebar:
                                     use_container_width=True,
                                     help="Open this chat",
                                 ):
-
-                                    loaded = (
-                                        accounts.load_chat(
-                                            c.id,
-                                            st.session_state.user_id,
-                                        )
+                                    loaded = accounts.load_chat(
+                                        c.id,
+                                        st.session_state.user_id,
                                     )
 
                                     if loaded is not None:
-
                                         st.session_state.chat_history = (
                                             loaded.messages
                                         )
-
                                         st.session_state.current_chat_id = (
                                             loaded.id
                                         )
-
+                                        load_chat_documents(loaded.id)
                                         st.rerun()
 
                         with edit_col:
-
-                            with st.container(
-                                key=f"chatedit_{c.id}"
-                            ):
-
+                            with st.container(key=f"chatedit_{c.id}"):
                                 if st.button(
                                     "✎",
                                     key=f"edit_{c.id}",
                                     help="Rename",
                                 ):
-
-                                    st.session_state.renaming_chat_id = (
-                                        c.id
-                                    )
-
+                                    st.session_state.renaming_chat_id = c.id
                                     st.rerun()
 
                         with del_col:
-
-                            with st.container(
-                                key=f"chatdel_{c.id}"
-                            ):
-
+                            with st.container(key=f"chatdel_{c.id}"):
                                 if st.button(
                                     "🗑",
                                     key=f"del_{c.id}",
                                     help="Delete",
                                 ):
-
+                                    _refresh_remote_caches()
                                     accounts.delete_chat(
                                         c.id,
                                         st.session_state.user_id,
@@ -1782,16 +1791,33 @@ with st.sidebar:
                                         st.session_state.current_chat_id
                                         == c.id
                                     ):
-
-                                        st.session_state.current_chat_id = (
-                                            None
-                                        )
+                                        st.session_state.current_chat_id = None
+                                        st.session_state.chat_history = []
+                                        reset_document_manager()
 
                                     st.rerun()
 
-    # API status
-    if not dm.has_api_key():
+        else:
+            st.caption("No chats yet.")
 
+    # Documents belonging only to the current chat.
+    with st.container(key="panel_documents"):
+        render_chat_documents(
+            st.session_state.current_chat_id,
+            sidebar=True,
+        )
+
+        st.markdown("---")
+
+        with st.container(key="sample_report_button"):
+            if st.button(
+                "Try sample quarterly report",
+                use_container_width=True,
+                key="sample_report",
+            ):
+                load_sample_report()
+
+    if not dm.has_api_key():
         st.caption(
             "⚠️ No API key found. "
             "The assistant won't be able to respond yet."
@@ -1804,17 +1830,25 @@ with st.sidebar:
 
 render_header()
 
+# Show a document when the user clicks "View" in the sidebar.
+if st.session_state.viewing_document_name:
+    render_document_viewer(st.session_state.current_chat_id)
+    st.stop()
+
+# Documents are displayed on the individual user messages that reference
+# them, ChatGPT-style. There is intentionally no global attachment strip here.
+
 
 # ---------------------------------------------------------------------------
 # Existing chat history
 # ---------------------------------------------------------------------------
 
 for msg in st.session_state.chat_history:
-
     render_bubble(
         msg["role"],
         msg["content"],
         msg.get("sources"),
+        msg.get("attachments"),
     )
 
 
@@ -1824,29 +1858,45 @@ for msg in st.session_state.chat_history:
 
 def handle_question(
     q: str,
+    document_names: list[str] | None = None,
 ) -> None:
+    q = q.strip()
 
-    render_bubble(
-        "user",
-        q,
-    )
+    if not q:
+        return
+
+    # Always reconcile the in-memory document index with the documents saved
+    # for this chat. This matters when files were attached in separate chat
+    # submissions: the database is the source of truth, so a second upload
+    # can never be silently omitted from a later question.
+    current_dm = st.session_state.dm
+
+    if st.session_state.current_chat_id:
+        stored_documents = _cached_list_chat_documents(st.session_state.current_chat_id, st.session_state.user_id)
+        stored_names = {d.filename for d in stored_documents}
+        loaded_names = set(current_dm.documents.keys())
+
+        if stored_names != loaded_names:
+            previous_focus = current_dm.active_document
+            load_chat_documents(st.session_state.current_chat_id)
+            current_dm = st.session_state.dm
+
+            if previous_focus in current_dm.documents:
+                current_dm.active_document = previous_focus
+
+    # Use the reconciled manager from this point onward.
+    dm = current_dm
 
     if not dm.has_api_key():
-
         answer = (
             "This assistant isn't connected yet — "
             "an API key needs to be added before "
             "I can respond."
         )
-
         sources = []
 
     else:
-
-        with st.spinner(
-            "Thinking…"
-        ):
-
+        with st.spinner("Thinking…"):
             api_history = [
                 {
                     "role": m["role"],
@@ -1856,43 +1906,44 @@ def handle_question(
             ]
 
             try:
-
-                answer, sources = (
-                    dm.ask_with_sources(
-                        q,
-                        history=api_history,
-                    )
+                answer, sources = dm.ask_with_sources(
+                    q,
+                    history=api_history,
+                    document_names=document_names,
                 )
 
             except RuntimeError as e:
-
                 answer = str(e)
                 sources = []
 
             except Exception as e:
-
                 answer = (
                     "Something went wrong calling "
                     f"the model: {e}"
                 )
-
                 sources = []
 
-    render_bubble(
-        "assistant",
-        answer,
-        sources,
-    )
-
+    # Use the documents that actually supplied retrieved context for this
+    # question. This makes the attachment shown on the user bubble precise:
+    # a later-uploaded document will not retroactively appear on old messages.
+    attachment_names = []
     source_data = []
-
     seen = set()
 
     for source in sources:
+        if isinstance(source, dict):
+            doc_name = source.get("doc_name")
+            page = source.get("page")
+        else:
+            doc_name = getattr(source, "doc_name", None)
+            page = getattr(source, "page", None)
+
+        if doc_name and doc_name not in attachment_names:
+            attachment_names.append(doc_name)
 
         item = {
-            "doc_name": source.doc_name,
-            "page": source.page,
+            "doc_name": doc_name,
+            "page": page,
         }
 
         key = (
@@ -1901,19 +1952,18 @@ def handle_question(
         )
 
         if key not in seen:
-
             seen.add(key)
+            source_data.append(item)
 
-            source_data.append(
-                item
-            )
+    user_message = {
+        "role": "user",
+        "content": q,
+    }
 
-    st.session_state.chat_history.append(
-        {
-            "role": "user",
-            "content": q,
-        }
-    )
+    if attachment_names:
+        user_message["attachments"] = attachment_names
+
+    st.session_state.chat_history.append(user_message)
 
     st.session_state.chat_history.append(
         {
@@ -1923,12 +1973,25 @@ def handle_question(
         }
     )
 
-    st.session_state.current_chat_id = (
-        accounts.save_chat(
-            st.session_state.user_id,
-            st.session_state.chat_history,
-            chat_id=st.session_state.current_chat_id,
-        )
+    # Render after the response is known so the user's bubble can contain the
+    # exact files used for that question. The following rerun then renders the
+    # same attachment from persisted chat history.
+    render_bubble(
+        "user",
+        q,
+        attachments=attachment_names,
+    )
+
+    render_bubble(
+        "assistant",
+        answer,
+        source_data,
+    )
+
+    st.session_state.current_chat_id = accounts.save_chat(
+        st.session_state.user_id,
+        st.session_state.chat_history,
+        chat_id=st.session_state.current_chat_id,
     )
 
     st.rerun()
@@ -1940,55 +2003,125 @@ def handle_question(
 
 if not st.session_state.chat_history:
 
-    st.markdown(
-        '<div class="fw-question-label">'
-        'Start with a question about your documents'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+    if dm.documents:
+        st.markdown(
+            '<div class="fw-question-label">'
+            'Start with a question about your documents'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
-    suggestions = [
-        "Summarize this document",
-        "What are the key points?",
-        "Any important numbers or dates?",
-    ]
+        suggestions = [
+            "Summarize this document",
+            "What are the key points?",
+            "Any important numbers or dates?",
+        ]
 
-    suggestion_cols = st.columns(3)
+        suggestion_cols = st.columns(3)
+        clicked_suggestion = None
 
-    clicked_suggestion = None
+        for col, suggestion in zip(
+            suggestion_cols,
+            suggestions,
+        ):
+            with col:
+                if st.button(
+                    suggestion,
+                    key=f"suggest_{suggestion}",
+                    use_container_width=True,
+                ):
+                    clicked_suggestion = suggestion
 
-    for col, suggestion in zip(
-        suggestion_cols,
-        suggestions,
-    ):
+        if clicked_suggestion:
+            handle_question(clicked_suggestion)
 
-        with col:
-
-            if st.button(
-                suggestion,
-                key=f"suggest_{suggestion}",
-                use_container_width=True,
-            ):
-
-                clicked_suggestion = suggestion
-
-    if clicked_suggestion:
-
-        handle_question(
-            clicked_suggestion
+    else:
+        st.markdown(
+            '<div class="fw-question-label">'
+            'Attach one or more documents below to get started'
+            '</div>',
+            unsafe_allow_html=True,
         )
 
 
 # ---------------------------------------------------------------------------
-# Chat input
+# Chat input with native multi-file attachments
 # ---------------------------------------------------------------------------
 
-question = st.chat_input(
-    "Ask anything about your documents..."
+submission = st.chat_input(
+    "Ask anything about your documents...",
+    accept_file="multiple",
+    file_type=SUPPORTED_FILE_TYPES,
+    key="chat_input",
 )
 
-if question:
-
-    handle_question(
-        question
+if submission:
+    submitted_files = list(
+        getattr(submission, "files", []) or []
     )
+    question = (
+        getattr(submission, "text", "") or ""
+    ).strip()
+    loaded_names = []
+    upload_note = question.lower().strip().replace("’", "'")
+    upload_only_phrases = {
+        "here's the second",
+        "here is the second",
+        "here's the file",
+        "here is the file",
+        "here's the document",
+        "here is the document",
+        "uploaded",
+        "uploaded it",
+        "there it is",
+    }
+
+    if submitted_files:
+        chat_id = ensure_current_chat()
+
+        loaded_names = []
+
+        with st.spinner(
+            f"Reading {len(submitted_files)} "
+            f"document{'s' if len(submitted_files) != 1 else ''}…"
+        ):
+            for uploaded_file in submitted_files:
+                if ingest_uploaded_file(uploaded_file, chat_id):
+                    loaded_names.append(uploaded_file.name)
+
+        if loaded_names:
+            # A newly uploaded file should never remain trapped inside an
+            # earlier single-document focus. The next question should be
+            # allowed to search the complete set of files in this chat.
+            st.session_state.dm.clear_document_scope()
+
+            # If the user only attached a file and wrote a short note such
+            # as "here's the second", don't send that note to the LLM as if
+            # it were a document question. Just record the upload and wait
+            # for the actual question.
+            if upload_note in upload_only_phrases:
+                user_message = {
+                    "role": "user",
+                    "content": question,
+                    "attachments": loaded_names,
+                }
+                st.session_state.chat_history.append(user_message)
+                st.session_state.current_chat_id = accounts.save_chat(
+                    st.session_state.user_id,
+                    st.session_state.chat_history,
+                    chat_id=st.session_state.current_chat_id,
+                )
+                st.rerun()
+
+        if loaded_names and not question:
+            st.rerun()
+
+    if question and not (
+        submitted_files
+        and question.lower().strip().replace("’", "'")
+        in upload_only_phrases
+    ):
+        handle_question(
+            question,
+            document_names=loaded_names or None,
+        )
