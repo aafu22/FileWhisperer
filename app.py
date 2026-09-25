@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import streamlit as st
+from streamlit_cookies_manager import CookieManager
 
 from filewhisperer import FileWhisperer
 from filewhisperer import accounts
@@ -29,6 +30,14 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="auto",
 )
+
+# Persistent browser storage for Remember Me.
+# The token itself is random; only its SHA-256 hash is stored server-side in Turso.
+cookies = CookieManager()
+if not cookies.ready():
+    st.stop()
+
+REMEMBER_COOKIE = "filewhisperer_remember"
 
 
 # ---------------------------------------------------------------------------
@@ -737,6 +746,32 @@ div[class*="st-key-panel_profile"] .stButton button {
     }
 }
 
+
+/* --- Compact document actions --- */
+div[class*="st-key-docactions_"] {
+    opacity: 1 !important;
+}
+div[class*="st-key-docactions_"] [data-testid="stHorizontalBlock"] {
+    gap: 0.2rem !important;
+}
+div[class*="st-key-docactions_"] .stButton button {
+    width: 2rem !important;
+    min-width: 2rem !important;
+    height: 2rem !important;
+    min-height: 2rem !important;
+    padding: 0 !important;
+    border-radius: 7px !important;
+    border: 1px solid transparent !important;
+    background: transparent !important;
+    color: var(--ink-muted) !important;
+    font-size: 0.9rem !important;
+}
+div[class*="st-key-docactions_"] .stButton button:hover {
+    background: var(--accent-soft) !important;
+    border-color: var(--border) !important;
+    color: var(--ink) !important;
+}
+
 </style>
 """
 
@@ -764,33 +799,35 @@ SIGNUP_CODE = os.environ.get(
     os.environ.get("DOCUMIND_SIGNUP_CODE", ""),
 ).strip()
 
-# Simple 30-day Remember Me:
-# the token is kept in Streamlit's URL query parameters instead of relying
-# on browser cookies, which avoids the cookie round-trip issue on Streamlit
-# Community Cloud.
-REMEMBER_QUERY_PARAM = "remember"
+# 30-day Remember Me.
+# The browser keeps the random token in a persistent cookie. Turso stores only
+# the token hash and enforces the 30-day expiry.
 REMEMBER_ME_SECONDS = 30 * 24 * 60 * 60
 
 
-def get_remember_token_from_url() -> str | None:
-    """Read the persistent login token from the current URL."""
+def get_remember_token_from_browser() -> str | None:
+    """Read the persistent login token from the browser cookie."""
     try:
-        token = st.query_params.get(REMEMBER_QUERY_PARAM)
-        return token.strip() if token else None
+        token = cookies.get(REMEMBER_COOKIE)
+        return token.strip() if isinstance(token, str) and token.strip() else None
     except Exception:
         return None
 
 
-def set_remember_token_in_url(token: str) -> None:
-    """Persist the remember-me token in the browser URL."""
-    if token:
-        st.query_params[REMEMBER_QUERY_PARAM] = token
+def set_remember_token_in_browser(token: str) -> None:
+    """Persist the remember-me token in the browser."""
+    if not token:
+        return
+    cookies[REMEMBER_COOKIE] = token
+    cookies.save()
 
 
-def delete_remember_token_from_url() -> None:
-    """Remove the remember-me token from the browser URL."""
+def delete_remember_token_from_browser() -> None:
+    """Remove the remember-me token from the browser."""
     try:
-        del st.query_params[REMEMBER_QUERY_PARAM]
+        if cookies.get(REMEMBER_COOKIE) is not None:
+            del cookies[REMEMBER_COOKIE]
+            cookies.save()
     except Exception:
         pass
 
@@ -816,7 +853,7 @@ if "remember_token" not in st.session_state:
 
 if st.session_state.user_id is None:
 
-    remember_token = get_remember_token_from_url()
+    remember_token = get_remember_token_from_browser()
 
     if remember_token:
         try:
@@ -831,8 +868,8 @@ if st.session_state.user_id is None:
                 ) = session
                 st.session_state.remember_token = remember_token
 
-        except Exception:
-            pass
+        except Exception as e:
+            st.error(f"Remember-me restore failed: {e!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -935,14 +972,14 @@ if st.session_state.user_id is None:
 
                                 st.session_state.remember_token = token
 
-                                set_remember_token_in_url(
+                                set_remember_token_in_browser(
                                     token
                                 )
 
                             else:
                                 st.session_state.remember_token = None
 
-                                delete_remember_token_from_url()
+                                delete_remember_token_from_browser()
 
 
                         except accounts.InvalidCredentials as e:
@@ -1038,7 +1075,7 @@ if st.session_state.user_id is None:
 
                                 st.session_state.remember_token = token
 
-                                set_remember_token_in_url(
+                                set_remember_token_in_browser(
                                     token
                                 )
 
@@ -1162,7 +1199,6 @@ def _cached_list_chat_documents(chat_id: str, user_id: int):
 def _refresh_remote_caches() -> None:
     _cached_list_chats.clear()
     _cached_list_chat_documents.clear()
-
 
 # ---------------------------------------------------------------------------
 # Session state
@@ -1506,7 +1542,7 @@ def render_chat_documents(
             with st.container(
                 key=f"docrow_{chat_id}_{document.filename}"
             ):
-                card_col, btn_col = st.columns([5, 1])
+                card_col, actions_col = st.columns([4.8, 1.6])
 
                 with card_col:
                     st.markdown(
@@ -1522,36 +1558,41 @@ def render_chat_documents(
                         unsafe_allow_html=True,
                     )
 
-                with btn_col:
+                with actions_col:
                     with st.container(
                         key=f"docactions_{chat_id}_{document.filename}"
                     ):
-                        if st.button(
-                            "View",
-                            key=f"view_{chat_id}_{document.filename}",
-                            help="View this file",
-                            use_container_width=True,
-                        ):
-                            st.session_state.viewing_document_name = document.filename
-                            st.rerun()
+                        view_col, delete_col = st.columns(2, gap="small")
 
-                        if st.button(
-                            "🗑",
-                            key=f"remove_{chat_id}_{document.filename}",
-                            help="Remove document from this chat",
-                            use_container_width=True,
-                        ):
-                            _refresh_remote_caches()
-                            accounts.delete_chat_document(
-                                chat_id,
-                                st.session_state.user_id,
-                                document.filename,
-                            )
-                            if st.session_state.viewing_document_name == document.filename:
-                                st.session_state.viewing_document_name = None
-                            reset_document_manager()
-                            load_chat_documents(chat_id)
-                            st.rerun()
+                        with view_col:
+                            if st.button(
+                                "◉",
+                                key=f"view_{chat_id}_{document.filename}",
+                                help="View file",
+                            ):
+                                st.session_state.viewing_document_name = document.filename
+                                st.rerun()
+
+                        with delete_col:
+                            if st.button(
+                                "🗑",
+                                key=f"remove_{chat_id}_{document.filename}",
+                                help="Delete file",
+                            ):
+                                accounts.delete_chat_document(
+                                    chat_id,
+                                    st.session_state.user_id,
+                                    document.filename,
+                                )
+                                _refresh_remote_caches()
+                                if (
+                                    st.session_state.viewing_document_name
+                                    == document.filename
+                                ):
+                                    st.session_state.viewing_document_name = None
+                                reset_document_manager()
+                                load_chat_documents(chat_id)
+                                st.rerun()
 
         return
 
@@ -1612,12 +1653,12 @@ with st.sidebar:
                 remember_token = st.session_state.remember_token
 
                 if not remember_token:
-                    remember_token = get_remember_token_from_url()
+                    remember_token = get_remember_token_from_browser()
 
                 if remember_token:
                     accounts.revoke_remember_token(remember_token)
 
-                delete_remember_token_from_url()
+                delete_remember_token_from_browser()
 
                 st.session_state.user_id = None
                 st.session_state.username = None
