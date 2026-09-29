@@ -838,13 +838,20 @@ flush_pending_cookie_ops()
 if st.session_state.user_id is None:
 
     try:
-        # Read the cookie synchronously from the request that loaded this page.
-        # CookieManager is still used for setting/deleting the cookie, but using
-        # it here would require an asynchronous component round-trip and causes
-        # the login form to flash briefly during refresh.
+        # Community Cloud does not always expose custom browser cookies through
+        # st.context.cookies after a hard refresh. Prefer the synchronous value
+        # when it is available, then fall back to CookieManager, whose browser
+        # component can read the cookie directly and trigger the rerun needed to
+        # restore the remembered session.
         remember_token = None
+
         if hasattr(st, "context"):
             remember_token = st.context.cookies.get(
+                REMEMBER_COOKIE_NAME
+            )
+
+        if not remember_token:
+            remember_token = cookie_manager.get(
                 REMEMBER_COOKIE_NAME
             )
 
