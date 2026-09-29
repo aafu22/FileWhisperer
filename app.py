@@ -2122,10 +2122,26 @@ def handle_question(
 
     if is_small_talk(q):
 
-        # Skip retrieval entirely — re-deriving document content for
-        # "okay thank u" is exactly the noisy, over-long reply this is
-        # meant to avoid.
-        answer = "You're welcome! Let me know if you have more questions."
+        # Handle simple pleasantries locally so they stay fast, but avoid
+        # replying to every small-talk message with the same canned text.
+        normalized = re.sub(r"[^a-z0-9\s]", "", q.strip().lower()).strip()
+        normalized = re.sub(r"\s+", " ", normalized)
+
+        if normalized in {"hi", "hello", "hey", "yo"}:
+            answer = "Hey! What would you like to know?"
+        elif normalized in {"good morning", "good afternoon", "good evening", "good night"}:
+            answer = normalized.capitalize() + "! How can I help?"
+        elif any(word in normalized.split() for word in {"thanks", "thank", "thanku", "thx", "ty"}):
+            answer = "You're welcome!"
+        elif normalized in {"bye", "goodbye", "see ya", "see you"}:
+            answer = "See you!"
+        elif normalized in {"ok", "okay", "kk", "k", "alright", "sure", "got it", "gotcha", "noted", "fine", "yep", "yeah", "yes"}:
+            answer = "Sure!"
+        elif normalized in {"cool", "nice", "great", "perfect", "awesome"}:
+            answer = "Glad to hear it!"
+        else:
+            answer = "Sure!"
+
         sources = []
 
     elif not dm.has_api_key():
