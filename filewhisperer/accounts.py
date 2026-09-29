@@ -1,4 +1,4 @@
-"""User accounts and per-user chat storage, backed by a local SQLite file.
+"""User accounts and per-user chat storage, backed by Supabase PostgreSQL.
 
 Passwords are hashed with PBKDF2-HMAC-SHA256 (Python's built-in `hashlib`,
 260,000 iterations, a random 16-byte salt per user) rather than a
@@ -19,14 +19,11 @@ import hashlib
 import json
 import os
 import secrets
-import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "documind.db"
 PBKDF2_ITERATIONS = 260_000
 REMEMBER_ME_DAYS = 30
 REMEMBER_ME_SECONDS = REMEMBER_ME_DAYS * 24 * 60 * 60
@@ -70,27 +67,34 @@ class ChatDocument:
 
 @contextmanager
 def _connect():
-    """Open the local SQLite database."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
+    """Open the persistent Supabase PostgreSQL database."""
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured.")
+
+    import psycopg
+
+    conn = psycopg.connect(database_url)
     try:
         yield conn
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
 def init_db() -> None:
-    """Create the local SQLite schema if it does not already exist."""
+    """Create the Supabase PostgreSQL schema if it does not already exist."""
     with _connect() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id BIGSERIAL PRIMARY KEY,
                     username TEXT UNIQUE NOT NULL,
-                    salt BLOB NOT NULL,
-                    password_hash BLOB NOT NULL,
+                    salt BYTEA NOT NULL,
+                    password_hash BYTEA NOT NULL,
                     created_at REAL NOT NULL
                 )
                 """
@@ -115,7 +119,7 @@ def init_db() -> None:
                     filename TEXT NOT NULL,
                     file_type TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
-                    data BLOB NOT NULL,
+                    data BYTEA NOT NULL,
                     created_at REAL NOT NULL,
                     PRIMARY KEY (chat_id, filename),
                     FOREIGN KEY (chat_id) REFERENCES chats(id)
@@ -154,18 +158,18 @@ def create_user(username: str, password: str) -> int:
     with _connect() as conn:
         try:
             cur = conn.execute(
-                "INSERT INTO users (username, salt, password_hash, created_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO users (username, salt, password_hash, created_at) VALUES (%s, %s, %s, %s)",
                 (username, salt, password_hash, time.time()),
             )
         except Exception as e:
-            # Handle SQLite UNIQUE constraint violations.
+            # Handle PostgreSQL UNIQUE constraint violations.
             message = str(e).lower()
             if "unique" not in message and "constraint" not in message:
                 raise
             raise UsernameTaken(f'The name "{username}" is already taken.') from e
 
         # Username is UNIQUE, so selecting the inserted id is reliable.
-        row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        row = conn.execute("SELECT id FROM users WHERE username = %s", (username,)).fetchone()
         return int(row[0])
 
 
@@ -175,14 +179,16 @@ def authenticate(username: str, password: str) -> int:
     failed attempt doesn't reveal whether the username exists)."""
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id, salt, password_hash FROM users WHERE username = ?", (username.strip(),)
+            "SELECT id, salt, password_hash FROM users WHERE username = %s", (username.strip(),)
         ).fetchone()
 
     if row is None:
         raise InvalidCredentials("Incorrect username or password.")
 
-    candidate = _hash_password(password, row[1])
-    if not secrets.compare_digest(candidate, row[2]):
+    salt = bytes(row[1])
+    stored_hash = bytes(row[2])
+    candidate = _hash_password(password, salt)
+    if not secrets.compare_digest(candidate, stored_hash):
         raise InvalidCredentials("Incorrect username or password.")
 
     return row[0]
@@ -191,7 +197,7 @@ def authenticate(username: str, password: str) -> int:
 # --- remember-me sessions ----------------------------------------------
 
 def _hash_session_token(token: str) -> str:
-    """Hash a browser session token before storing it in SQLite."""
+    """Hash a browser session token before storing it in PostgreSQL."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
@@ -207,7 +213,7 @@ def create_remember_token(user_id: int) -> str:
             """
             INSERT INTO remember_sessions
                 (token_hash, user_id, created_at, expires_at)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             """,
             (token_hash, user_id, now, expires_at),
         )
@@ -228,7 +234,7 @@ def authenticate_remember_token(token: str) -> tuple[int, str] | None:
             SELECT rs.user_id, u.username, rs.expires_at
             FROM remember_sessions rs
             JOIN users u ON u.id = rs.user_id
-            WHERE rs.token_hash = ?
+            WHERE rs.token_hash = %s
             """,
             (token_hash,),
         ).fetchone()
@@ -238,7 +244,7 @@ def authenticate_remember_token(token: str) -> tuple[int, str] | None:
 
         if row[2] <= now:
             conn.execute(
-                "DELETE FROM remember_sessions WHERE token_hash = ?",
+                "DELETE FROM remember_sessions WHERE token_hash = %s",
                 (token_hash,),
             )
             return None
@@ -253,7 +259,7 @@ def revoke_remember_token(token: str) -> None:
     token_hash = _hash_session_token(token)
     with _connect() as conn:
         conn.execute(
-            "DELETE FROM remember_sessions WHERE token_hash = ?",
+            "DELETE FROM remember_sessions WHERE token_hash = %s",
             (token_hash,),
         )
 
@@ -262,7 +268,7 @@ def cleanup_expired_tokens() -> None:
     """Delete expired persistent sessions."""
     with _connect() as conn:
         conn.execute(
-            "DELETE FROM remember_sessions WHERE expires_at <= ?",
+            "DELETE FROM remember_sessions WHERE expires_at <= %s",
             (time.time(),),
         )
 
@@ -277,7 +283,7 @@ def save_chat(user_id: int, messages: list[dict], chat_id: str | None = None, na
     chat_id = chat_id or uuid.uuid4().hex[:12]
 
     with _connect() as conn:
-        existing = conn.execute("SELECT created_at, name FROM chats WHERE id = ?", (chat_id,)).fetchone()
+        existing = conn.execute("SELECT created_at, name FROM chats WHERE id = %s", (chat_id,)).fetchone()
 
         if name is None:
             first_user_msg = next(
@@ -303,7 +309,7 @@ def save_chat(user_id: int, messages: list[dict], chat_id: str | None = None, na
         conn.execute(
             """
             INSERT INTO chats (id, user_id, name, created_at, updated_at, messages)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 updated_at = excluded.updated_at,
@@ -318,7 +324,7 @@ def save_chat(user_id: int, messages: list[dict], chat_id: str | None = None, na
 def list_chats(user_id: int) -> list[ChatSummary]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, created_at, updated_at FROM chats WHERE user_id = ? ORDER BY updated_at DESC",
+            "SELECT id, name, created_at, updated_at FROM chats WHERE user_id = %s ORDER BY updated_at DESC",
             (user_id,),
         ).fetchall()
     return [ChatSummary(id=r[0], name=r[1], created_at=r[2], updated_at=r[3]) for r in rows]
@@ -330,7 +336,7 @@ def load_chat(chat_id: str, user_id: int) -> Chat | None:
     them, so one user can't probe for another's chat ids."""
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id, user_id, name, created_at, updated_at, messages FROM chats WHERE id = ? AND user_id = ?",
+            "SELECT id, user_id, name, created_at, updated_at, messages FROM chats WHERE id = %s AND user_id = %s",
             (chat_id, user_id),
         ).fetchone()
     if row is None:
@@ -361,7 +367,7 @@ def save_chat_document(
 
     with _connect() as conn:
         chat = conn.execute(
-            "SELECT id FROM chats WHERE id = ? AND user_id = ?",
+            "SELECT id FROM chats WHERE id = %s AND user_id = %s",
             (chat_id, user_id),
         ).fetchone()
 
@@ -372,7 +378,7 @@ def save_chat_document(
             """
             INSERT INTO chat_documents
                 (chat_id, filename, file_type, size_bytes, data, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT(chat_id, filename) DO UPDATE SET
                 file_type = excluded.file_type,
                 size_bytes = excluded.size_bytes,
@@ -402,7 +408,7 @@ def list_chat_documents(
                    cd.size_bytes, cd.data, cd.created_at
             FROM chat_documents cd
             JOIN chats c ON c.id = cd.chat_id
-            WHERE cd.chat_id = ? AND c.user_id = ?
+            WHERE cd.chat_id = %s AND c.user_id = %s
             ORDER BY cd.created_at ASC
             """,
             (chat_id, user_id),
@@ -431,12 +437,12 @@ def delete_chat_document(
         conn.execute(
             """
             DELETE FROM chat_documents
-            WHERE chat_id = ?
-              AND filename = ?
+            WHERE chat_id = %s
+              AND filename = %s
               AND EXISTS (
                   SELECT 1 FROM chats
                   WHERE chats.id = chat_documents.chat_id
-                    AND chats.user_id = ?
+                    AND chats.user_id = %s
               )
             """,
             (chat_id, filename, user_id),
@@ -447,18 +453,18 @@ def rename_chat(chat_id: str, user_id: int, new_name: str) -> None:
     new_name = new_name.strip() or "Untitled chat"
     with _connect() as conn:
         conn.execute(
-            "UPDATE chats SET name = ? WHERE id = ? AND user_id = ?", (new_name, chat_id, user_id)
+            "UPDATE chats SET name = %s WHERE id = %s AND user_id = %s", (new_name, chat_id, user_id)
         )
 
 
 def delete_chat(chat_id: str, user_id: int) -> None:
     with _connect() as conn:
         conn.execute(
-            "DELETE FROM chat_documents WHERE chat_id = ? AND EXISTS "
-            "(SELECT 1 FROM chats WHERE chats.id = chat_documents.chat_id AND chats.user_id = ?)",
+            "DELETE FROM chat_documents WHERE chat_id = %s AND EXISTS "
+            "(SELECT 1 FROM chats WHERE chats.id = chat_documents.chat_id AND chats.user_id = %s)",
             (chat_id, user_id),
         )
         conn.execute(
-            "DELETE FROM chats WHERE id = ? AND user_id = ?",
+            "DELETE FROM chats WHERE id = %s AND user_id = %s",
             (chat_id, user_id),
         )
