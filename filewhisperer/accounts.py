@@ -22,7 +22,6 @@ import secrets
 import sqlite3
 import time
 import uuid
-import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,11 +30,6 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "documind.db"
 PBKDF2_ITERATIONS = 260_000
 REMEMBER_ME_DAYS = 30
 REMEMBER_ME_SECONDS = REMEMBER_ME_DAYS * 24 * 60 * 60
-
-# Streamlit reruns the app script frequently. Schema creation against a remote
-# database is expensive, so initialize it only once per Python process.
-_DB_INITIALIZED = False
-_DB_INIT_LOCK = threading.Lock()
 
 
 class UsernameTaken(Exception):
@@ -76,24 +70,10 @@ class ChatDocument:
 
 @contextmanager
 def _connect():
-    """Use persistent Turso Cloud in deployment; local SQLite otherwise."""
-    turso_url = os.getenv("TURSO_DATABASE_URL", "").strip()
-    turso_token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
-
-    if turso_url and turso_token:
-        try:
-            import turso_serverless
-        except ImportError as exc:
-            raise RuntimeError(
-                "Turso credentials are configured but turso_serverless is not installed. "
-                "Add turso_serverless to requirements.txt."
-            ) from exc
-        conn = turso_serverless.connect(turso_url, auth_token=turso_token)
-    else:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("PRAGMA journal_mode=WAL")
-
+    """Open the local SQLite database."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
     try:
         yield conn
         conn.commit()
@@ -102,20 +82,8 @@ def _connect():
 
 
 def init_db() -> None:
-    """Create the schema once per Python process.
-
-    Streamlit reruns app.py on interactions. Without this guard, a remote Turso
-    deployment performs four CREATE TABLE network requests on every rerun.
-    """
-    global _DB_INITIALIZED
-    if _DB_INITIALIZED:
-        return
-
-    with _DB_INIT_LOCK:
-        if _DB_INITIALIZED:
-            return
-
-        with _connect() as conn:
+    """Create the local SQLite schema if it does not already exist."""
+    with _connect() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
@@ -167,7 +135,6 @@ def init_db() -> None:
                 """
             )
 
-        _DB_INITIALIZED = True
 
 def _hash_password(password: str, salt: bytes) -> bytes:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
@@ -191,13 +158,13 @@ def create_user(username: str, password: str) -> int:
                 (username, salt, password_hash, time.time()),
             )
         except Exception as e:
-            # SQLite and Turso use different exception classes for UNIQUE violations.
+            # Handle SQLite UNIQUE constraint violations.
             message = str(e).lower()
             if "unique" not in message and "constraint" not in message:
                 raise
             raise UsernameTaken(f'The name "{username}" is already taken.') from e
 
-        # Avoid driver-specific lastrowid behavior. Username is UNIQUE, so this is reliable.
+        # Username is UNIQUE, so selecting the inserted id is reliable.
         row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
         return int(row[0])
 
