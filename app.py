@@ -438,6 +438,34 @@ div[class*="st-key-docactions_"] .stButton button:hover {
     border-color: var(--border);
 }
 
+/* Compact mobile chat actions. Desktop keeps the inline edit/delete icons. */
+div[class*="st-key-chatmobilemenu_"],
+div[class*="st-key-chatmobileactions_"] {
+    display: none;
+}
+
+div[class*="st-key-chatmobilemenu_"] .stButton button {
+    border-color: transparent;
+    background: transparent;
+    padding: 0.15rem 0.2rem;
+    min-width: 2rem;
+    font-size: 1.35rem;
+    line-height: 1;
+}
+
+div[class*="st-key-chatmobilemenu_"] .stButton button:hover {
+    background: var(--surface);
+    border-color: var(--border);
+}
+
+div[class*="st-key-chatmobileactions_"] {
+    margin: -0.15rem 0 0.35rem 0;
+    padding: 0.35rem 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+}
+
 div[class*="st-key-panel_profile"] .stButton button {
     padding: 0.35rem 0.5rem;
     font-size: 0.85rem;
@@ -696,6 +724,26 @@ div[class*="st-key-panel_profile"] .stButton button {
         font-size: 0.92rem;
     }
 
+    /* On mobile, replace the separate edit/delete icons with one menu. */
+    div[class*="st-key-chatedit_"],
+    div[class*="st-key-chatdel_"] {
+        display: none !important;
+    }
+
+    div[class*="st-key-chatmobilemenu_"] {
+        display: block !important;
+        opacity: 1 !important;
+    }
+
+    div[class*="st-key-chatmobileactions_"] {
+        display: block;
+    }
+
+    div[class*="st-key-chatmobileactions_"] .stButton button {
+        min-height: 40px !important;
+        font-size: 0.9rem;
+    }
+
     /* Quick-start buttons */
     div[class*="st-key-suggest_"] button {
         min-height: 46px !important;
@@ -838,20 +886,13 @@ flush_pending_cookie_ops()
 if st.session_state.user_id is None:
 
     try:
-        # Community Cloud does not always expose custom browser cookies through
-        # st.context.cookies after a hard refresh. Prefer the synchronous value
-        # when it is available, then fall back to CookieManager, whose browser
-        # component can read the cookie directly and trigger the rerun needed to
-        # restore the remembered session.
+        # Read the cookie synchronously from the request that loaded this page.
+        # CookieManager is still used for setting/deleting the cookie, but using
+        # it here would require an asynchronous component round-trip and causes
+        # the login form to flash briefly during refresh.
         remember_token = None
-
         if hasattr(st, "context"):
             remember_token = st.context.cookies.get(
-                REMEMBER_COOKIE_NAME
-            )
-
-        if not remember_token:
-            remember_token = cookie_manager.get(
                 REMEMBER_COOKIE_NAME
             )
 
@@ -1245,6 +1286,9 @@ if "current_chat_id" not in st.session_state:
 
 if "renaming_chat_id" not in st.session_state:
     st.session_state.renaming_chat_id = None
+
+if "chat_menu_id" not in st.session_state:
+    st.session_state.chat_menu_id = None
 
 if "processed_files" not in st.session_state:
     st.session_state.processed_files = set()
@@ -2072,6 +2116,63 @@ with st.sidebar:
 
                                     st.rerun()
 
+                            with st.container(
+                                key=f"chatmobilemenu_{c.id}"
+                            ):
+                                if st.button(
+                                    "⋮",
+                                    key=f"mobile_menu_{c.id}",
+                                    help="Chat actions",
+                                ):
+                                    st.session_state.chat_menu_id = (
+                                        None
+                                        if st.session_state.chat_menu_id == c.id
+                                        else c.id
+                                    )
+                                    st.rerun()
+
+                        if st.session_state.chat_menu_id == c.id:
+                            with st.container(
+                                key=f"chatmobileactions_{c.id}"
+                            ):
+                                mobile_rename_col, mobile_delete_col = st.columns(2)
+
+                                with mobile_rename_col:
+                                    if st.button(
+                                        "Rename",
+                                        key=f"mobile_rename_{c.id}",
+                                        use_container_width=True,
+                                    ):
+                                        st.session_state.chat_menu_id = None
+                                        st.session_state.renaming_chat_id = c.id
+                                        st.rerun()
+
+                                with mobile_delete_col:
+                                    if st.button(
+                                        "Delete",
+                                        key=f"mobile_delete_{c.id}",
+                                        use_container_width=True,
+                                    ):
+                                        accounts.delete_chat(
+                                            c.id,
+                                            st.session_state.user_id,
+                                        )
+                                        delete_chat_documents(
+                                            st.session_state.user_id,
+                                            c.id,
+                                        )
+
+                                        if (
+                                            st.session_state.current_chat_id
+                                            == c.id
+                                        ):
+                                            st.session_state.current_chat_id = None
+                                            st.session_state.chat_history = []
+                                            restore_document_manager()
+
+                                        st.session_state.chat_menu_id = None
+                                        st.rerun()
+
     # API status
     if not dm.has_api_key():
 
@@ -2122,26 +2223,10 @@ def handle_question(
 
     if is_small_talk(q):
 
-        # Handle simple pleasantries locally so they stay fast, but avoid
-        # replying to every small-talk message with the same canned text.
-        normalized = re.sub(r"[^a-z0-9\s]", "", q.strip().lower()).strip()
-        normalized = re.sub(r"\s+", " ", normalized)
-
-        if normalized in {"hi", "hello", "hey", "yo"}:
-            answer = "Hey! What would you like to know?"
-        elif normalized in {"good morning", "good afternoon", "good evening", "good night"}:
-            answer = normalized.capitalize() + "! How can I help?"
-        elif any(word in normalized.split() for word in {"thanks", "thank", "thanku", "thx", "ty"}):
-            answer = "You're welcome!"
-        elif normalized in {"bye", "goodbye", "see ya", "see you"}:
-            answer = "See you!"
-        elif normalized in {"ok", "okay", "kk", "k", "alright", "sure", "got it", "gotcha", "noted", "fine", "yep", "yeah", "yes"}:
-            answer = "Sure!"
-        elif normalized in {"cool", "nice", "great", "perfect", "awesome"}:
-            answer = "Glad to hear it!"
-        else:
-            answer = "Sure!"
-
+        # Skip retrieval entirely — re-deriving document content for
+        # "okay thank u" is exactly the noisy, over-long reply this is
+        # meant to avoid.
+        answer = "You're welcome! Let me know if you have more questions."
         sources = []
 
     elif not dm.has_api_key():
