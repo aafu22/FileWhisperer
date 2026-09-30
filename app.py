@@ -458,13 +458,6 @@ div[class*="st-key-chatmobilemenu_"] .stButton button:hover {
     border-color: var(--border);
 }
 
-div[class*="st-key-chatmobileactions_"] {
-    margin: -0.15rem 0 0.35rem 0;
-    padding: 0.35rem 0.4rem;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
-}
 
 div[class*="st-key-panel_profile"] .stButton button {
     padding: 0.35rem 0.5rem;
@@ -735,14 +728,6 @@ div[class*="st-key-panel_profile"] .stButton button {
         opacity: 1 !important;
     }
 
-    div[class*="st-key-chatmobileactions_"] {
-        display: block;
-    }
-
-    div[class*="st-key-chatmobileactions_"] .stButton button {
-        min-height: 40px !important;
-        font-size: 0.9rem;
-    }
 
     /* Quick-start buttons */
     div[class*="st-key-suggest_"] button {
@@ -2119,35 +2104,22 @@ with st.sidebar:
                             with st.container(
                                 key=f"chatmobilemenu_{c.id}"
                             ):
-                                if st.button(
+                                # Compact mobile actions. st.popover keeps
+                                # Rename/Delete in a small floating menu
+                                # instead of expanding the sidebar row.
+                                with st.popover(
                                     "⋮",
-                                    key=f"mobile_menu_{c.id}",
+                                    key=f"chat_actions_{c.id}",
                                     help="Chat actions",
                                 ):
-                                    st.session_state.chat_menu_id = (
-                                        None
-                                        if st.session_state.chat_menu_id == c.id
-                                        else c.id
-                                    )
-                                    st.rerun()
-
-                        if st.session_state.chat_menu_id == c.id:
-                            with st.container(
-                                key=f"chatmobileactions_{c.id}"
-                            ):
-                                mobile_rename_col, mobile_delete_col = st.columns(2)
-
-                                with mobile_rename_col:
                                     if st.button(
                                         "Rename",
                                         key=f"mobile_rename_{c.id}",
                                         use_container_width=True,
                                     ):
-                                        st.session_state.chat_menu_id = None
                                         st.session_state.renaming_chat_id = c.id
                                         st.rerun()
 
-                                with mobile_delete_col:
                                     if st.button(
                                         "Delete",
                                         key=f"mobile_delete_{c.id}",
@@ -2170,8 +2142,8 @@ with st.sidebar:
                                             st.session_state.chat_history = []
                                             restore_document_manager()
 
-                                        st.session_state.chat_menu_id = None
                                         st.rerun()
+
 
     # API status
     if not dm.has_api_key():
