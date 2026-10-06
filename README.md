@@ -4,8 +4,7 @@
 
 FileWhisperer combines lightweight TF-IDF retrieval with an LLM-based generation pipeline to create a practical Retrieval-Augmented Generation (RAG) application.
 
-**[Live Demo]([(https://filewhispererr.streamlit.app/)) · [GitHub]((https://github.com/aafu22/FileWhisperer))**
-
+**[Live Demo](https://filewhispererr.streamlit.app/) · [GitHub](https://github.com/aafu22/FileWhisperer)**
 📄 See [CASE_STUDY.md](CASE_STUDY.md) for a write-up of the architecture,
 engineering decisions, and specific bugs this project's design solves.
 
