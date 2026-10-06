@@ -4,7 +4,7 @@
 
 FileWhisperer combines lightweight TF-IDF retrieval with an LLM-based generation pipeline to create a practical Retrieval-Augmented Generation (RAG) application.
 
-**[Live Demo](YOUR_STREAMLIT_URL) · [GitHub](YOUR_GITHUB_URL)**
+**[Live Demo](https://filewhispererr.streamlit.app/) · [GitHub](https://github.com/aafu22/FileWhisperer)**
 
 📄 See [CASE_STUDY.md](CASE_STUDY.md) for a write-up of the architecture,
 engineering decisions, and specific bugs this project's design solves.
@@ -24,12 +24,17 @@ engineering decisions, and specific bugs this project's design solves.
    all loaded documents (`filewhisperer/retriever.py`).
 4. **Answer** — those chunks are handed to a free LLM on OpenRouter, with
    instructions to answer only from what's given and to name its sources
-   (`filewhisperer/assistant.py`). The Streamlit app also shows which chunks
-   were used in a "Sources" expander under each answer.
+   (`filewhisperer/assistant.py`). The Streamlit app also shows which
+   sources were used under each answer.
 
 This is retrieval-augmented generation (RAG) in miniature: enough structure
 to stay accurate on documents too large to fit in one prompt, without
 pulling in a vector database.
+
+In the web app, short pleasantries ("hi", "thanks", "okay") get a quick
+reply without running retrieval or calling the model, and asking a question
+before any document is loaded prompts you to add one instead of answering
+from the model's general knowledge.
 
 ## Setup
 
@@ -37,17 +42,28 @@ pulling in a vector database.
 pip install -r requirements.txt
 ```
 
-**Add your API key once, and FileWhisperer will remember it every time you run
-it:**
+**Add your settings once, and FileWhisperer will remember them every time
+you run it:**
 
 1. Get a free key at [openrouter.ai/keys](https://openrouter.ai/keys) (no
    credit card needed).
-2. Copy `.env.example` to a new file named `.env` in the project root.
-3. Open `.env` and paste your key in place of `sk-or-your-key-here`.
+2. Create a free hosted PostgreSQL database (for example on
+   [Supabase](https://supabase.com) or [Neon](https://neon.tech)) and copy
+   its connection string. This is where accounts and chat history are
+   stored.
+3. Copy `.env.example` to a new file named `.env` in the project root.
+4. Open `.env` and fill in both values:
+   ```
+   OPENROUTER_API_KEY=sk-or-your-key-here
+   DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME
+   ```
 
 That's it - `.env` is loaded automatically, and it's already listed in
 `.gitignore` so it won't accidentally get committed if you put this project
 under version control.
+
+`DATABASE_URL` is required for the web app: without it, startup stops with
+`DATABASE_URL is not configured`. The library and CLI only need the API key.
 
 (If you'd rather not use a `.env` file, you can instead set
 `OPENROUTER_API_KEY` as a regular environment variable — see the bottom of
@@ -58,12 +74,12 @@ this README for OS-specific commands.)
 ```python
 from filewhisperer import FileWhisperer
 
-dm = FileWhisperer()
-dm.add_document("quarterly_report.pdf")
-dm.add_document("meeting_notes.docx")
+fw = FileWhisperer()
+fw.add_document("quarterly_report.pdf")
+fw.add_document("meeting_notes.docx")
 
-print(dm.ask("What were the Q3 revenue numbers?"))
-print(dm.ask("Did the meeting notes mention any risks?"))
+print(fw.ask("What were the Q3 revenue numbers?"))
+print(fw.ask("Did the meeting notes mention any risks?"))
 ```
 
 ## Use the browser UI (recommended if you don't want the command line)
@@ -73,9 +89,10 @@ streamlit run app.py
 ```
 
 This is the only command you'll type. It opens FileWhisperer in your browser —
-drag files into the sidebar to add them, paste your API key there if it
-isn't already in `.env`, and ask questions in a normal chat box. No further
-typing into a terminal required.
+sign up, drag files into the sidebar to add them, and ask questions in a
+normal chat box. Your API key is read from `.env` (or Streamlit secrets when
+deployed), so there's nothing to paste into the app. No further typing into a
+terminal required.
 
 ## Use it from the command line
 
@@ -86,7 +103,7 @@ python -m filewhisperer.cli
 ```
 FileWhisperer — ask questions about your own documents
 ---------------------------------------------------
-/add <path>       add a .txt .md .csv .json .pdf or .docx file
+/add <path>       add a .txt .md .csv .json .pdf .docx or .xlsx file
 /list             show loaded documents
 /remove <name>    drop a document
 /quit             exit
@@ -100,13 +117,16 @@ According to "quarterly_report.pdf", ...
 
 ## Advanced features
 
-**A sample document loads automatically the first time.** So the app is
-never a blank slate - a bundled sample quarterly report
-(`sample_documents/Sample_Quarterly_Report.md`) loads once per fresh
-session if you haven't added anything of your own yet, with a few
-suggested questions shown as one-click buttons. It's a real document like
-any other — remove it, add your own, whatever you'd do normally. This
-only happens once per session; removing it doesn't bring it back.
+**Try it instantly with the sample document.** So the app is never a
+blank slate, a bundled sample quarterly report
+(`sample_documents/Sample_Quarterly_Report.md`) is one click away: press
+**Try sample quarterly report** in the sidebar and it loads like any other
+document, with a few suggested questions shown as one-click buttons.
+Remove it, add your own, whatever you'd do normally.
+
+**Ask about specific documents.** With several documents loaded, you can
+restrict a question to just the ones you pick instead of searching all of
+them.
 
 **Multi-column PDFs.** A page is checked for a large horizontal gap
 between words — the signature of a two-column layout. If found, the left
@@ -141,20 +161,18 @@ A few things worth knowing about how this works:
 - **Passwords are hashed**, not stored as plain text — using PBKDF2 (part
   of Python's standard library, 260,000 iterations, a random salt per
   user), not a third-party library. Even someone with direct access to the
-  database file can't read passwords back out of it.
-- **Everything is stored locally** in a single SQLite file at
-  `data/documind.db`, created automatically the first time you run the
-  app. There's no external database or account provider — the whole
-  system is self-contained and already covered by `.gitignore`.
-- **Documents are not saved per account** — only chat text is. Re-add
-  documents after logging back in for a new session; they live in memory
-  for that session only, the same as before accounts existed. Saving raw
-  file contents per account would grow the database quickly and duplicate
-  files that already exist on your computer.
+  database can't read passwords back out of it.
+- **Accounts and chats live in your own database**, the one you point
+  `DATABASE_URL` at (see Setup). Because it's external to the app, accounts
+  and chat history survive restarts and redeploys.
+- **Documents are saved per chat**, so reopening a chat brings back the
+  files it was using. They're stored in a local SQLite file
+  (`filewhisperer_docs.db` by default; change the location with
+  `FILEWHISPERER_DOCS_DB`), keyed by user and chat, and deleted along with
+  the chat. This file is covered by `.gitignore`.
 - **This is deliberately simple**: no email verification, no "forgot
-  password" flow, no admin panel. For a small, self-hosted deployment
-  where you already know who you're giving access to, that's the right
-  amount of system.
+  password" flow, no admin panel. For a small deployment where you already
+  know who you're giving access to, that's the right amount of system.
 
 ### Protecting a public deployment
 
@@ -187,8 +205,9 @@ existing `os.environ`-based code works there with no changes.
    git remote add origin https://github.com/<your-username>/<repo-name>.git
    git push -u origin main
    ```
-   (`.env` and `data/` are already in `.gitignore`, so your key and local
-   accounts database won't get pushed.)
+   (`.env`, `data/`, and `*.db` files should be listed in `.gitignore`, so
+   your keys and local databases don't get pushed. Check this before your
+   first push.)
 2. Go to **[share.streamlit.io](https://share.streamlit.io)** and sign in
    with GitHub.
 3. Click **New app**, pick your repo/branch, and set the main file path to
@@ -197,7 +216,9 @@ existing `os.environ`-based code works there with no changes.
    format):
    ```toml
    OPENROUTER_API_KEY = "sk-or-..."
+   DATABASE_URL = "postgresql://USER:PASSWORD@HOST:5432/DBNAME"
    FILEWHISPERER_SIGNUP_CODE = "choose-something-not-guessable"
+   FILEWHISPERER_COOKIE_SECURE = "true"
    ```
 5. Click **Deploy**. First build takes a couple of minutes (it's also
    installing Tesseract via `packages.txt`). You'll get a URL like
@@ -209,15 +230,14 @@ Two things worth knowing about this specific hosting setup, so nothing here surp
   quiet period waits ~30-60 seconds while it wakes up. Worth mentioning if
   you're sending someone a link cold (a recruiter, say) so a slow first
   load doesn't look broken.
-- **> **Deployment note:** The Streamlit Community Cloud demo uses SQLite for simplicity. Because Community Cloud does not provide a persistent database volume by default, accounts and chat history in the public demo should be considered demo data rather than production data.**
-  Community Cloud rebuilds the app's container from your repo each time
-  you push new code, and there's no persistent volume by default — so
-  accounts/chats created on the live demo can be wiped whenever you
-  update it. Fine for a live portfolio demo (visitors can always sign up
-  fresh), but not something to rely on for real user data long-term. If
-  you outgrow that, swapping the SQLite calls in `filewhisperer/accounts.py`
-  for a hosted database (e.g. Supabase, Turso) is the natural next step —
-  the rest of the app wouldn't need to change.
+- **Saved documents don't survive a rebuild.** Accounts and chat history
+  are kept in the external database from `DATABASE_URL`, so they persist.
+  But Community Cloud has no persistent disk, so the local SQLite file that
+  stores each chat's uploaded documents is wiped whenever the app's
+  container is rebuilt (for example after you push new code). Users just
+  re-upload their files. If you need those to persist too, the natural next
+  step is moving the document storage in `app.py` to the same hosted
+  database or to object storage.
 
 ## Notes and limitations
 
@@ -234,9 +254,9 @@ Two things worth knowing about this specific hosting setup, so nothing here surp
 
   If you want a *specific* model instead (for a particular strength, e.g.
   long context or coding), set `OPENROUTER_MODEL` as an environment
-  variable or pick one from the sidebar dropdown in the Streamlit app — but
-  expect named free models to occasionally stop working and need swapping.
-  Check [openrouter.ai/models?max_price=0](https://openrouter.ai/models?max_price=0)
+  variable — but expect named free models to occasionally stop working and
+  need swapping. Check
+  [openrouter.ai/models?max_price=0](https://openrouter.ai/models?max_price=0)
   for the current list:
   ```bash
   export OPENROUTER_MODEL="meta-llama/llama-3.3-70b-instruct:free"
@@ -329,12 +349,19 @@ your machine.
 
 FileWhisperer supports a 30-day "Remember Me" login option.
 
-When enabled, the application creates a cryptographically random session token and stores only its SHA-256 hash in the SQLite database. The token is used to restore the user's authenticated session across browser refreshes and reopening the application.
+When enabled, the application creates a cryptographically random session
+token, stores only its SHA-256 hash in the database, and keeps the token
+itself in a browser cookie (`filewhisperer_remember`). The cookie is used to
+restore the user's authenticated session across browser refreshes and
+reopening the application. Tokens expire after 30 days, expired ones are
+cleaned up automatically, and the token is revoked on logout.
 
-For the current Streamlit Community Cloud deployment, the token is persisted through Streamlit URL query parameters rather than browser cookies. This was chosen for compatibility with Streamlit's hosted execution environment.
+Set `FILEWHISPERER_COOKIE_SECURE=true` when the app is served over HTTPS
+(as it is on Streamlit Community Cloud) so the cookie is only sent over
+secure connections.
 
-> Note: Because the token is carried in the URL, this implementation is intended as a simple portfolio/demo authentication mechanism rather than production-grade authentication. A production deployment should use secure, HttpOnly cookies or a dedicated authentication provider.
-
-### Database compatibility note
-
-The application is branded and packaged as **FileWhisperer**, but the local SQLite filename remains `data/documind.db` intentionally so existing DocuMind-era accounts and chat history can be carried forward without a database migration. Do not rename or delete this file unless you intentionally want to start with a new database.
+> Note: the cookie is written from the browser by a Streamlit component, so
+> it cannot be marked HttpOnly. This is a reasonable mechanism for a
+> portfolio or small self-hosted deployment, but a production deployment
+> should use server-set, HttpOnly cookies or a dedicated authentication
+> provider.
