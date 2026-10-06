@@ -1418,46 +1418,68 @@ def current_doc_scope() -> list[str]:
     return scope
 
 
-# Short acknowledgments that don't need a document lookup at all — just
-# ordinary conversational replies. Keeping this list small and literal
-# avoids misfiring on real (if short) questions like "ok but why?" or
-# "cool, what about Hindi?".
-_SMALL_TALK = {
+# Short pleasantries that don't need a document lookup at all. Each category
+# gets its own reply so "hi", "thanks" and "okay" don't all get the same
+# canned answer. Lists stay small and literal to avoid misfiring on real
+# (if short) questions like "ok but why?" or "cool, what about Hindi?".
+_GREETINGS = {
+    "hi", "hello", "hey", "yo", "good morning", "good afternoon",
+    "good evening",
+}
+_THANKS = {
+    "thanks", "thank you", "thank u", "thanku", "thx", "ty",
+    "thanks a lot", "thank you so much", "appreciate it", "appreciated",
+    "okay thanks", "okay thank you", "okay thank u", "ok thanks",
+    "ok thank you", "ok thank u",
+}
+_ACKS = {
     "ok", "okay", "kk", "k", "alright", "cool", "nice", "great", "perfect",
     "awesome", "sure", "got it", "gotcha", "noted", "fine", "fair enough",
-    "thanks", "thank you", "thank u", "thanku", "thx", "ty",
-    "okay thanks", "okay thank you", "okay thank u", "ok thanks",
-    "ok thank you", "ok thank u", "thanks a lot", "thank you so much",
-    "appreciate it", "appreciated", "np", "no problem", "you're welcome",
-    "youre welcome", "welcome", "bye", "goodbye", "see ya", "see you",
-    "good morning", "good afternoon", "good evening", "good night",
-    "hi", "hello", "hey", "yo",
+}
+_BYE = {"bye", "goodbye", "see ya", "see you", "good night"}
+_YOURE_WELCOME = {
+    "np", "no problem", "you're welcome", "youre welcome", "welcome",
+}
+_FILLER = {
+    "ok", "okay", "thanks", "thank", "you", "u", "so", "very", "much",
+    "a", "lot", "cool", "nice", "great", "awesome", "perfect", "yep",
+    "yeah", "yes",
 }
 
 
-def is_small_talk(q: str) -> bool:
-    """True for short pleasantries that shouldn't trigger document lookup."""
-    normalized = re.sub(r"[^a-z0-9\s]", "", q.strip().lower()).strip()
-    normalized = re.sub(r"\s+", " ", normalized)
+def small_talk_reply(q: str) -> str | None:
+    """Return a canned reply for pleasantries, or None for real questions."""
+    n = re.sub(r"[^a-z0-9\s]", "", q.strip().lower())
+    n = re.sub(r"\s+", " ", n).strip()
 
-    if not normalized:
-        return False
+    if not n:
+        return None
 
-    if normalized in _SMALL_TALK:
-        return True
+    if n in _GREETINGS:
+        return (
+            "Hi! Add a document in the sidebar (or try the sample "
+            "quarterly report) and ask me anything about it."
+        )
 
-    # A short run of only small-talk words ("okay", "thank", "u", "so",
-    # "much") with nothing else — catches minor variants without matching
-    # every message that happens to contain "thanks".
-    words = normalized.split()
+    if n in _THANKS:
+        return "You're welcome! Let me know if you have more questions."
 
-    filler = {
-        "ok", "okay", "thanks", "thank", "you", "u", "so", "very", "much",
-        "a", "lot", "cool", "nice", "great", "awesome", "perfect", "yep",
-        "yeah", "yes",
-    }
+    if n in _YOURE_WELCOME:
+        return "Anytime!"
 
-    return len(words) <= 5 and all(w in filler for w in words)
+    if n in _BYE:
+        return "Goodbye! Your chat history will be here when you return."
+
+    if n in _ACKS:
+        return "Got it. Ask me anything else about your documents."
+
+    # A short run of only filler words ("okay thank u so much") with
+    # nothing else, so we don't match every message containing "thanks".
+    words = n.split()
+    if len(words) <= 5 and all(w in _FILLER for w in words):
+        return "You're welcome! Let me know if you have more questions."
+
+    return None
 
 
 def build_model_question(q: str) -> str:
@@ -2193,12 +2215,24 @@ def handle_question(
         scope=scope,
     )
 
-    if is_small_talk(q):
+    small_talk = small_talk_reply(q)
+
+    if small_talk is not None:
 
         # Skip retrieval entirely — re-deriving document content for
         # "okay thank u" is exactly the noisy, over-long reply this is
         # meant to avoid.
-        answer = "You're welcome! Let me know if you have more questions."
+        answer = small_talk
+        sources = []
+
+    elif not dm.documents:
+
+        # Nothing loaded, so there is nothing to ground an answer in.
+        answer = (
+            "I don't have any documents to search yet. Add a file in the "
+            "sidebar, or click \"Try sample quarterly report\", and I'll "
+            "answer from it."
+        )
         sources = []
 
     elif not dm.has_api_key():
