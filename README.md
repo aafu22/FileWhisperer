@@ -1,5 +1,4 @@
 
-https://github.com/user-attachments/assets/77634b39-5a83-4202-ab5a-95e05dbd2792
 # FileWhisperer
 
 **An AI-powered document assistant that lets you upload files, ask natural-language questions, and get answers grounded in your documents.**
@@ -12,7 +11,7 @@ FileWhisperer combines lightweight TF-IDF retrieval with an LLM-based generation
 
 A quick walkthrough of FileWhisperer — upload a document, ask a question, and get an AI-generated answer grounded in the document.
 
-https://github.com/user-attachments/assets/5992ae00-61d6-418d-8264-1064662e2563
+https://github.com/user-attachments/assets/b8eb8319-abc2-4a9b-95d9-4d41aac1a53c
 
 See [CASE_STUDY.md](CASE_STUDY.md) for a write-up of the architecture,
 engineering decisions, and specific bugs this project's design solves.
