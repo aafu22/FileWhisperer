@@ -11,7 +11,7 @@ FileWhisperer combines lightweight TF-IDF retrieval with an LLM-based generation
 
 A quick walkthrough of FileWhisperer — upload a document, ask a question, and get an AI-generated answer grounded in the document.
 
-https://github.com/user-attachments/assets/b8eb8319-abc2-4a9b-95d9-4d41aac1a53c
+<img width="1280" height="688" alt="demo" src="https://github.com/user-attachments/assets/9e830b39-b446-487f-8491-7d1b382f3164" />
 
 See [CASE_STUDY.md](CASE_STUDY.md) for a write-up of the architecture,
 engineering decisions, and specific bugs this project's design solves.
